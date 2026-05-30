@@ -1,137 +1,93 @@
-#!/usr/bin/env python3
 """
-CEO Dashboard — AI Revenue System
-Target: $10,000/month MRR
+CEO Dashboard — the command center for your AI agent organization.
 
-Usage:
-  python main.py                    — show dashboard
-  python main.py strategy           — run strategy cycle (find opportunities)
-  python main.py approve            — CEO approval session for pending initiatives
-  python main.py execute            — execute all approved initiatives
-  python main.py finance            — generate financial report
-  python main.py research <topic>   — research a specific topic
-  python main.py marketing <id>     — create marketing package for initiative
-  python main.py revenue <amount> <source> — record revenue
-  python main.py expense <amount> <category> — record expense
-  python main.py logs               — show recent agent logs
-  python main.py full               — run full autonomous cycle
+Goal: reach $10,000/month MRR through legal means, using only free tools.
+You are the CEO. Nothing new launches without your approval.
+
+Run it with:  python main.py
+(Free Groq key required: https://console.groq.com  -> set GROQ_API_KEY)
 """
-import sys
-import os
 
-sys.path.insert(0, os.path.dirname(__file__))
+from agents import finance, research
+from core import orchestrator, state
 
-from core import state as st
-from core import approval, orchestrator
-
-
-def cmd_dashboard():
-    print(st.get_dashboard())
-
-
-def cmd_strategy():
-    context = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else ""
-    orchestrator.run_strategy_cycle(context)
+MENU = """
+==================== CEO DASHBOARD ====================
+  1. Propose a new initiative   (Strategy + Research -> your approval)
+  2. Finance report             (progress toward $10k/mo)
+  3. Research a topic           (free web search)
+  4. View pending initiatives
+  5. View activity log
+  6. Record revenue             (log a real sale)
+  0. Exit
+======================================================"""
 
 
-def cmd_approve():
-    approval.run_approval_session()
+def show_status():
+    data = state.load()
+    pct = round((data["mrr"] / data["goal_mrr"]) * 100, 1)
+    bar_len = 30
+    filled = int(bar_len * min(pct, 100) / 100)
+    bar = "#" * filled + "-" * (bar_len - filled)
+    print(f"\nMRR: ${data['mrr']} / ${data['goal_mrr']}  [{bar}] {pct}%")
 
 
-def cmd_execute():
-    orchestrator.run_execution_cycle()
-
-
-def cmd_finance():
-    orchestrator.run_finance_report()
-
-
-def cmd_research():
-    if len(sys.argv) < 3:
-        print("Usage: python main.py research <topic>")
+def view_pending():
+    data = state.load()
+    pending = [i for i in data["initiatives"] if i["status"] == "pending"]
+    if not pending:
+        print("\nNo pending initiatives.")
         return
-    from agents import research
-    topic = " ".join(sys.argv[2:])
-    print(f"\nResearching: {topic}\n")
-    result = research.research_opportunity(topic)
-    print(result["raw"])
+    for i in pending:
+        print(f"\n#{i['id']} {i['title']} (cost: {i['cost']})")
+        print("  " + i["pitch"][:200])
 
 
-def cmd_marketing():
-    if len(sys.argv) < 3:
-        print("Usage: python main.py marketing <initiative_id>")
+def view_log():
+    data = state.load()
+    for entry in data["agent_logs"][-15:]:
+        print(f"  [{entry['time']}] {entry['actor']}: {entry['message']}")
+    if not data["agent_logs"]:
+        print("  (no activity yet)")
+
+
+def record_revenue():
+    try:
+        amount = float(input("  Amount received ($): ").strip())
+    except ValueError:
+        print("  Invalid amount.")
         return
-    from agents import marketing
-    initiative_id = sys.argv[2]
-    data = st.load()
-    initiative = next((i for i in data["initiatives"] if i["id"] == initiative_id), None)
-    if not initiative:
-        print(f"Initiative {initiative_id} not found.")
-        return
-    result = marketing.create_marketing_package(initiative)
-    print(result)
-
-
-def cmd_revenue():
-    if len(sys.argv) < 4:
-        print("Usage: python main.py revenue <amount> <source>")
-        return
-    from agents import finance
-    amount = float(sys.argv[2])
-    source = " ".join(sys.argv[3:])
-    finance.record_revenue(amount, source)
-    print(st.get_dashboard())
-
-
-def cmd_expense():
-    if len(sys.argv) < 4:
-        print("Usage: python main.py expense <amount> <category>")
-        return
-    from agents import finance
-    amount = float(sys.argv[2])
-    category = " ".join(sys.argv[3:])
-    finance.record_expense(amount, category)
-
-
-def cmd_logs():
-    data = st.load()
-    logs = data.get("agent_logs", [])
-    recent = logs[-20:]
-    print(f"\nRecent agent activity ({len(logs)} total):\n")
-    for log in recent:
-        print(f"  [{log['ts'][:19]}] {log['agent']:12} | {log['action']:25} | {log['detail'][:60]}")
-
-
-def cmd_full():
-    context = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else ""
-    orchestrator.run_full_cycle(context)
-
-
-COMMANDS = {
-    "strategy": cmd_strategy,
-    "approve": cmd_approve,
-    "execute": cmd_execute,
-    "finance": cmd_finance,
-    "research": cmd_research,
-    "marketing": cmd_marketing,
-    "revenue": cmd_revenue,
-    "expense": cmd_expense,
-    "logs": cmd_logs,
-    "full": cmd_full,
-}
+    source = input("  Source / customer: ").strip() or "unspecified"
+    state.record_revenue(amount, source)
+    print(f"  Logged ${amount} from {source}.")
 
 
 def main():
-    if len(sys.argv) < 2:
-        cmd_dashboard()
-        return
-
-    cmd = sys.argv[1].lower()
-    if cmd in COMMANDS:
-        COMMANDS[cmd]()
-    else:
-        print(f"Unknown command: {cmd}")
-        print(__doc__)
+    print("\nWelcome, CEO. Your AI organization is online.")
+    while True:
+        show_status()
+        print(MENU)
+        choice = input("Select: ").strip()
+        if choice == "1":
+            ctx = input("Any direction for the team? (enter to skip): ").strip()
+            orchestrator.new_initiative_flow(context=ctx)
+        elif choice == "2":
+            print("\n" + finance.report())
+        elif choice == "3":
+            topic = input("Topic to research: ").strip()
+            if topic:
+                print("\n" + research.research(topic))
+        elif choice == "4":
+            view_pending()
+        elif choice == "5":
+            view_log()
+        elif choice == "6":
+            record_revenue()
+        elif choice == "0":
+            print("\nGoodbye, CEO. Progress saved.\n")
+            break
+        else:
+            print("  Unknown option.")
 
 
 if __name__ == "__main__":

@@ -1,62 +1,65 @@
-"""CEO approval gate — nothing launches without an explicit yes."""
-from core import state as st
+"""
+The CEO approval gate.
+
+This is the heart of the rule: NO new product idea or business initiative
+gets created or acted on without the CEO's explicit approval. Every agent
+that wants to start something new must pass through this gate first.
+"""
+
+from datetime import datetime
+
+from core import state
 
 
-def present_for_approval(initiative: dict) -> str:
-    """Store initiative and return its ID. CEO must approve via CLI."""
-    initiative_id = st.add_initiative(initiative)
-    st.log_agent_action("approval_gate", "initiative_submitted", initiative_id)
-    return initiative_id
+def request_approval(initiative_id):
+    """
+    Show the CEO a pending initiative and block until they decide.
+
+    Returns True if approved, False if rejected. Nothing happens
+    downstream unless this returns True.
+    """
+    data = state.load()
+    initiative = next(
+        (i for i in data["initiatives"] if i["id"] == initiative_id), None
+    )
+    if initiative is None:
+        print(f"[!] No initiative with id {initiative_id}")
+        return False
+
+    print("\n" + "=" * 60)
+    print("  CEO APPROVAL REQUIRED")
+    print("=" * 60)
+    print(f"  Proposed by : {initiative.get('agent', 'unknown')}")
+    print(f"  Title       : {initiative.get('title', '(no title)')}")
+    print(f"  Cost        : {initiative.get('cost', 'free')}")
+    print("\n  Pitch:")
+    print("  " + initiative.get("pitch", "(no pitch)").replace("\n", "\n  "))
+    print("=" * 60)
+
+    while True:
+        choice = input("  Approve this initiative? [y]es / [n]o: ").strip().lower()
+        if choice in ("y", "yes"):
+            return _decide(initiative_id, approved=True)
+        if choice in ("n", "no"):
+            return _decide(initiative_id, approved=False)
+        print("  Please type y or n.")
 
 
-def run_approval_session() -> None:
-    """Interactive CLI session for the CEO to approve/reject pending initiatives."""
-    data = st.load()
-    pending = [i for i in data["initiatives"] if i["status"] == "pending_approval"]
-
-    if not pending:
-        print("No initiatives pending approval.")
-        return
-
-    for init in pending:
-        print("\n" + "=" * 60)
-        print(f"INITIATIVE ID: {init['id']}")
-        print(f"Title:         {init.get('title', 'Untitled')}")
-        print(f"Agent:         {init.get('proposed_by', 'unknown')}")
-        print(f"Summary:       {init.get('summary', '')}")
-        print(f"Revenue Model: {init.get('revenue_model', '')}")
-        print(f"Est. MRR:      ${init.get('estimated_mrr', 0):,}")
-        print(f"Free Tools:    {init.get('free_tools_only', True)}")
-        print(f"Time to Rev:   {init.get('time_to_revenue', 'unknown')}")
-        print(f"Risks:         {init.get('risks', '')}")
-        print("=" * 60)
-
-        while True:
-            choice = input("\nApprove this initiative? [y/n/skip]: ").strip().lower()
-            if choice == "y":
-                st.update_initiative_status(init["id"], "approved")
-                st.log_agent_action("ceo", "approved", init["id"])
-                print(f"✓ Initiative {init['id']} APPROVED.")
-                break
-            elif choice == "n":
-                reason = input("Rejection reason (optional): ").strip()
-                st.update_initiative_status(init["id"], "rejected")
-                st.log_agent_action("ceo", "rejected", f"{init['id']} — {reason}")
-                print(f"✗ Initiative {init['id']} REJECTED.")
-                break
-            elif choice == "skip":
-                print("Skipped.")
-                break
+def _decide(initiative_id, approved):
+    data = state.load()
+    for i in data["initiatives"]:
+        if i["id"] == initiative_id:
+            i["status"] = "approved" if approved else "rejected"
+            i["decided_at"] = datetime.now().isoformat(timespec="seconds")
+            if approved:
+                data["approved_initiatives"].append(i["id"])
             else:
-                print("Enter y, n, or skip.")
-
-
-def get_approved_initiatives() -> list:
-    data = st.load()
-    approved_ids = set(data["approved_initiatives"])
-    return [i for i in data["initiatives"] if i["id"] in approved_ids]
-
-
-def is_approved(initiative_id: str) -> bool:
-    data = st.load()
-    return initiative_id in data["approved_initiatives"]
+                data["rejected_initiatives"].append(i["id"])
+            break
+    state.save(data)
+    state.log(
+        "CEO",
+        f"{'APPROVED' if approved else 'REJECTED'} initiative #{initiative_id}",
+    )
+    print(f"  -> {'Approved.' if approved else 'Rejected.'}\n")
+    return approved

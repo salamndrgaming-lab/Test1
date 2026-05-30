@@ -1,1 +1,5 @@
-anthropic>=0.50.0
+# Free stack — no paid API keys required.
+# Groq: free LLM API (get a free key at https://console.groq.com)
+openai>=1.30.0
+# Free web search for the Research agent (no key needed)
+ddgs>=9.0.0

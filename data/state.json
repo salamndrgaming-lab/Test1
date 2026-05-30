@@ -1,0 +1,18 @@
+{
+  "mrr": 0,
+  "expenses": 0,
+  "initiatives": [],
+  "approved_initiatives": [],
+  "rejected_initiatives": [],
+  "revenue_events": [],
+  "agent_logs": [],
+  "milestones": {
+    "first_dollar": false,
+    "100_mrr": false,
+    "1000_mrr": false,
+    "5000_mrr": false,
+    "10000_mrr": false
+  },
+  "created_at": "2026-05-30",
+  "goal_mrr": 10000
+}

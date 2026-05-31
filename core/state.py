@@ -63,6 +63,57 @@ def record_revenue(amount, source):
     save(state)
 
 
+def create_task(initiative_id, title, steps):
+    """
+    Register a new task for an approved initiative.
+
+    steps: list of {"agent": str, "description": str}
+    Returns the task dict (with status fields filled in).
+    """
+    s = load()
+    if "tasks" not in s:
+        s["tasks"] = []
+    task = {
+        "initiative_id": initiative_id,
+        "title": title,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "status": "in-progress",
+        "steps": [
+            {
+                "step": idx + 1,
+                "agent": step["agent"],
+                "description": step["description"],
+                "status": "pending",
+                "output": None,
+                "updated_at": None,
+            }
+            for idx, step in enumerate(steps)
+        ],
+    }
+    s["tasks"].append(task)
+    save(s)
+    return task
+
+
+def update_task_step(initiative_id, step_num, status, output=None):
+    """Mark a single step as 'in-progress', 'done', or 'error'."""
+    s = load()
+    for task in s.get("tasks", []):
+        if task["initiative_id"] == initiative_id:
+            for step in task["steps"]:
+                if step["step"] == step_num:
+                    step["status"] = status
+                    step["output"] = output
+                    step["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                    break
+            # Mark whole task done when all steps are done/error
+            all_terminal = all(st["status"] in ("done", "error") for st in task["steps"])
+            if all_terminal:
+                task["status"] = "done"
+            break
+    save(s)
+
+
 def _update_milestones(state):
     mrr = state["mrr"]
     m = state["milestones"]

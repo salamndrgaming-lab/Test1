@@ -13,7 +13,7 @@
     min-height: 100vh;
   }
 
-  /* ── Layout ── */
+  /* ── Header ── */
   .header {
     background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
     border-bottom: 1px solid #2d3748;
@@ -31,13 +31,13 @@
   }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 
+  /* ── Grid ── */
   .grid {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    grid-template-rows: auto auto auto;
+    grid-template-columns: 1fr 1fr 380px;
     gap: 20px;
     padding: 24px 32px;
-    max-width: 1400px;
+    max-width: 1500px;
     margin: 0 auto;
   }
 
@@ -54,93 +54,81 @@
     text-transform: uppercase;
     letter-spacing: .1em;
     color: #718096;
-    margin-bottom: 12px;
+    margin-bottom: 14px;
   }
 
-  /* ── MRR card ── */
+  /* ── MRR ── */
   .mrr-card { grid-column: 1 / -1; }
-  .mrr-main {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    margin-bottom: 16px;
-  }
+  .mrr-main { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
   .mrr-value { font-size: 3rem; font-weight: 800; color: #68d391; }
   .mrr-goal  { font-size: 1.1rem; color: #718096; }
-  .progress-track {
-    background: #1f2937;
-    border-radius: 99px;
-    height: 10px;
-    overflow: hidden;
-    margin-bottom: 8px;
-  }
-  .progress-fill {
-    height: 100%;
-    border-radius: 99px;
-    background: linear-gradient(90deg, #38a169, #68d391);
-    transition: width .6s ease;
-    min-width: 2px;
-  }
+  .progress-track { background: #1f2937; border-radius: 99px; height: 10px; overflow: hidden; margin-bottom: 8px; }
+  .progress-fill  { height: 100%; border-radius: 99px; background: linear-gradient(90deg, #38a169, #68d391); transition: width .6s ease; min-width: 2px; }
   .progress-label { font-size: .75rem; color: #718096; }
+  .milestones { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+  .milestone { padding: 4px 12px; border-radius: 99px; font-size: .7rem; font-weight: 600; border: 1px solid #2d3748; color: #4a5568; background: #1a202c; }
+  .milestone.done { border-color: #276749; color: #68d391; background: #1c4532; }
 
   /* ── Stat cards ── */
   .stat-big { font-size: 2rem; font-weight: 700; color: #e2e8f0; }
   .stat-sub { font-size: .8rem; color: #718096; margin-top: 4px; }
   .green { color: #68d391; }
   .red   { color: #fc8181; }
-  .amber { color: #f6ad55; }
 
-  /* ── Milestones ── */
-  .milestones { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
-  .milestone {
-    padding: 4px 12px; border-radius: 99px; font-size: .7rem; font-weight: 600;
-    border: 1px solid #2d3748; color: #4a5568; background: #1a202c;
-  }
-  .milestone.done { border-color: #276749; color: #68d391; background: #1c4532; }
-
-  /* ── Initiative cards ── */
-  .initiatives-card { grid-column: 1 / 3; max-height: 440px; overflow-y: auto; }
-  .initiative {
-    background: #1a202c;
-    border: 1px solid #2d3748;
-    border-radius: 10px;
-    padding: 16px 18px;
-    margin-bottom: 12px;
-  }
+  /* ── Pending initiatives ── */
+  .initiatives-card { grid-column: 1 / 2; max-height: 500px; overflow-y: auto; }
+  .initiative { background: #1a202c; border: 1px solid #2d3748; border-radius: 10px; padding: 16px 18px; margin-bottom: 12px; }
   .initiative:last-child { margin-bottom: 0; }
   .initiative-title { font-size: 1rem; font-weight: 700; color: #f7fafc; margin-bottom: 6px; }
-  .initiative-cost  { font-size: .72rem; color: #68d391; margin-bottom: 10px; }
-  .initiative-pitch { font-size: .82rem; color: #a0aec0; line-height: 1.55; margin-bottom: 12px; }
-  .initiative-research {
-    font-size: .78rem; color: #9ae6b4; background: #1c4532;
-    border-radius: 6px; padding: 10px 12px; margin-bottom: 12px;
-    white-space: pre-wrap; line-height: 1.5;
-  }
+  .initiative-cost  { font-size: .72rem; color: #68d391; margin-bottom: 8px; }
+  .initiative-pitch { font-size: .82rem; color: #a0aec0; line-height: 1.55; margin-bottom: 10px; }
+  .initiative-research { font-size: .78rem; color: #9ae6b4; background: #1c4532; border-radius: 6px; padding: 10px 12px; margin-bottom: 12px; white-space: pre-wrap; line-height: 1.5; }
   .btn-row { display: flex; gap: 10px; }
-  .btn {
-    padding: 8px 20px; border-radius: 8px; font-size: .82rem;
-    font-weight: 600; border: none; cursor: pointer; transition: opacity .15s;
-  }
+  .btn { padding: 8px 20px; border-radius: 8px; font-size: .82rem; font-weight: 600; border: none; cursor: pointer; transition: opacity .15s; }
   .btn:hover { opacity: .85; }
   .btn-approve { background: #276749; color: #9ae6b4; }
   .btn-reject  { background: #742a2a; color: #fc8181; }
 
-  .empty-state {
-    text-align: center; color: #4a5568; padding: 40px 0; font-size: .9rem;
-  }
+  .empty-state { text-align: center; color: #4a5568; padding: 32px 0; font-size: .85rem; }
 
-  /* ── Activity feed ── */
-  .feed-card { grid-column: 3; grid-row: 2 / 4; max-height: 640px; display: flex; flex-direction: column; }
-  .feed-log {
-    flex: 1; overflow-y: auto; display: flex; flex-direction: column-reverse;
+  /* ── Task tracker ── */
+  .tasks-card { grid-column: 2 / 3; max-height: 500px; overflow-y: auto; }
+  .task-block { background: #1a202c; border: 1px solid #2d3748; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+  .task-block:last-child { margin-bottom: 0; }
+  .task-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .task-title { font-size: .9rem; font-weight: 700; color: #f7fafc; }
+  .task-badge {
+    font-size: .65rem; font-weight: 700; padding: 2px 9px; border-radius: 99px;
+    text-transform: uppercase; letter-spacing: .05em;
   }
-  .feed-entry {
-    padding: 8px 0;
-    border-bottom: 1px solid #1f2937;
-    font-size: .76rem;
-    line-height: 1.5;
+  .badge-in-progress { background: #2a4365; color: #63b3ed; }
+  .badge-done        { background: #1c4532; color: #68d391; }
+
+  .step-row { display: flex; align-items: flex-start; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1f2937; }
+  .step-row:last-child { border-bottom: none; }
+  .step-icon { width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0; margin-top: 1px; display: flex; align-items: center; justify-content: center; font-size: .65rem; font-weight: 700; }
+  .step-pending     { background: #2d3748; color: #718096; }
+  .step-in-progress { background: #2a4365; color: #63b3ed; animation: spin 1.5s linear infinite; }
+  .step-done        { background: #1c4532; color: #68d391; }
+  .step-error       { background: #742a2a; color: #fc8181; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .step-body { flex: 1; min-width: 0; }
+  .step-desc { font-size: .78rem; color: #a0aec0; margin-bottom: 3px; }
+  .step-agent { font-size: .68rem; color: #4a5568; }
+  .step-output {
+    font-size: .74rem; color: #9ae6b4; background: #1c4532;
+    border-radius: 5px; padding: 7px 10px; margin-top: 6px;
+    white-space: pre-wrap; line-height: 1.5; max-height: 140px; overflow-y: auto;
   }
-  .feed-time   { color: #4a5568; margin-right: 6px; }
+  .step-output-toggle { font-size: .68rem; color: #4299e1; cursor: pointer; margin-top: 3px; }
+  .step-output-toggle:hover { text-decoration: underline; }
+
+  /* ── Live feed ── */
+  .feed-card { grid-column: 3; grid-row: 2 / 5; max-height: 760px; display: flex; flex-direction: column; }
+  .feed-log  { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+  .feed-entry { padding: 7px 0; border-bottom: 1px solid #1f2937; font-size: .75rem; line-height: 1.5; }
+  .feed-time   { color: #4a5568; margin-right: 6px; font-size: .68rem; }
   .feed-actor  { font-weight: 700; margin-right: 6px; }
   .feed-actor.strategy  { color: #76e4f7; }
   .feed-actor.research  { color: #b794f4; }
@@ -150,25 +138,17 @@
   .feed-actor.ceo       { color: #fbd38d; }
   .feed-actor.scheduler { color: #718096; }
   .feed-actor.system    { color: #718096; }
-  .feed-msg { color: #a0aec0; white-space: pre-wrap; }
+  .feed-msg { color: #a0aec0; white-space: pre-wrap; word-break: break-word; }
 
-  /* ── Revenue form ── */
+  /* ── Revenue ── */
   .revenue-card { grid-column: 1 / 3; }
   .rev-row { display: flex; gap: 10px; }
-  .rev-input {
-    flex: 1; background: #1f2937; border: 1px solid #2d3748;
-    border-radius: 8px; padding: 8px 14px;
-    color: #e2e8f0; font-size: .85rem; outline: none;
-  }
+  .rev-input { flex: 1; background: #1f2937; border: 1px solid #2d3748; border-radius: 8px; padding: 8px 14px; color: #e2e8f0; font-size: .85rem; outline: none; }
   .rev-input:focus { border-color: #4a5568; }
   .btn-log { background: #2b6cb0; color: #bee3f8; }
 
-  /* ── Run now button ── */
-  .run-btn {
-    background: none; border: 1px solid #2d3748; color: #718096;
-    padding: 6px 14px; border-radius: 8px; font-size: .75rem;
-    cursor: pointer; transition: all .15s;
-  }
+  /* ── Run now ── */
+  .run-btn { background: none; border: 1px solid #2d3748; color: #718096; padding: 6px 14px; border-radius: 8px; font-size: .75rem; cursor: pointer; transition: all .15s; }
   .run-btn:hover { border-color: #4a5568; color: #e2e8f0; }
 </style>
 </head>
@@ -191,24 +171,22 @@
   <div class="card mrr-card">
     <div class="card-title">Monthly Recurring Revenue</div>
     <div class="mrr-main">
-      <span class="mrr-value" id="mrr">$0</span>
+      <span class="mrr-value" id="mrr">$0.00</span>
       <span class="mrr-goal">/ $10,000 goal</span>
     </div>
-    <div class="progress-track">
-      <div class="progress-fill" id="progress-fill" style="width:0%"></div>
-    </div>
+    <div class="progress-track"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
     <div class="progress-label" id="progress-label">0% of goal</div>
     <div class="milestones" id="milestones"></div>
   </div>
 
-  <!-- Net / expenses -->
+  <!-- Net -->
   <div class="card">
     <div class="card-title">Net This Month</div>
-    <div class="stat-big green" id="net">$0</div>
+    <div class="stat-big green" id="net">$0.00</div>
     <div class="stat-sub">Expenses: <span id="expenses">$0</span></div>
   </div>
 
-  <!-- Initiative counts -->
+  <!-- Counts -->
   <div class="card">
     <div class="card-title">Initiatives</div>
     <div class="stat-big" id="approved-count">0</div>
@@ -218,7 +196,13 @@
   <!-- Pending approvals -->
   <div class="card initiatives-card">
     <div class="card-title">Waiting for Your Approval</div>
-    <div id="initiatives-list"><div class="empty-state">No pending initiatives.<br>Agents will propose one shortly.</div></div>
+    <div id="initiatives-list"><div class="empty-state">No pending initiatives.<br>Agents check in every 4 hours.</div></div>
+  </div>
+
+  <!-- Task tracker -->
+  <div class="card tasks-card">
+    <div class="card-title">Agent Task Progress</div>
+    <div id="tasks-list"><div class="empty-state">No active tasks yet.<br>Approve an initiative to see agents work.</div></div>
   </div>
 
   <!-- Live feed -->
@@ -242,16 +226,12 @@
 <script>
 // ── SSE live feed ──
 const feed = document.getElementById('feed');
-const actorColors = {
-  'strategy agent': 'strategy', 'research agent': 'research',
-  'execution agent': 'execution', 'marketing agent': 'marketing',
-  'finance agent': 'finance', 'ceo': 'ceo',
-  'scheduler': 'scheduler', 'system': 'system',
+const actorMap = {
+  'strategy agent':'strategy','research agent':'research',
+  'execution agent':'execution','marketing agent':'marketing',
+  'finance agent':'finance','ceo':'ceo','scheduler':'scheduler','system':'system'
 };
-
-function actorClass(actor) {
-  return actorColors[actor.toLowerCase()] || 'system';
-}
+function actorClass(a){ return actorMap[a.toLowerCase()] || 'system'; }
 
 function appendFeed(entry) {
   const div = document.createElement('div');
@@ -260,88 +240,133 @@ function appendFeed(entry) {
     `<span class="feed-time">${entry.time}</span>` +
     `<span class="feed-actor ${actorClass(entry.actor)}">${entry.actor}</span>` +
     `<span class="feed-msg">${entry.message}</span>`;
-  feed.prepend(div);
-  // keep max 100 entries
-  while (feed.children.length > 100) feed.removeChild(feed.lastChild);
+  feed.appendChild(div);
+  feed.scrollTop = feed.scrollHeight;
+  while (feed.children.length > 120) feed.removeChild(feed.firstChild);
 }
 
 const es = new EventSource('/stream');
-es.onmessage = e => {
-  try { appendFeed(JSON.parse(e.data)); } catch {}
-};
+es.onmessage = e => { try { appendFeed(JSON.parse(e.data)); } catch{} };
 
-// ── Poll status every 8s ──
+// ── Status ──
 async function refreshStatus() {
-  const r = await fetch('/api/status');
-  const d = await r.json();
-
-  document.getElementById('mrr').textContent = '$' + d.mrr.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
-  document.getElementById('net').textContent = '$' + d.net.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
-  document.getElementById('expenses').textContent = '$' + d.expenses.toLocaleString();
+  const d = await fetch('/api/status').then(r=>r.json());
+  const fmt = v => '$' + Number(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  document.getElementById('mrr').textContent = fmt(d.mrr);
+  document.getElementById('net').textContent = fmt(d.net);
+  document.getElementById('expenses').textContent = fmt(d.expenses);
   document.getElementById('approved-count').textContent = d.approved_count;
   document.getElementById('rejected-count').textContent = d.rejected_count;
-  document.getElementById('progress-fill').style.width = Math.min(d.pct, 100) + '%';
-  document.getElementById('progress-label').textContent = d.pct + '% of goal';
-
-  const ms = d.milestones;
-  const labels = [['first_dollar','First $1'],['100_mrr','$100/mo'],['1000_mrr','$1k/mo'],['5000_mrr','$5k/mo'],['10000_mrr','$10k/mo']];
-  document.getElementById('milestones').innerHTML = labels.map(([k,l]) =>
-    `<span class="milestone ${ms[k]?'done':''}">${ms[k]?'✓ ':''} ${l}</span>`
+  document.getElementById('progress-fill').style.width = Math.min(d.pct,100)+'%';
+  document.getElementById('progress-label').textContent = d.pct+'% of goal';
+  const labels=[['first_dollar','First $1'],['100_mrr','$100/mo'],['1000_mrr','$1k/mo'],['5000_mrr','$5k/mo'],['10000_mrr','$10k/mo']];
+  document.getElementById('milestones').innerHTML = labels.map(([k,l])=>
+    `<span class="milestone ${d.milestones[k]?'done':''}">${d.milestones[k]?'✓ ':''}${l}</span>`
   ).join('');
 }
 
-// ── Poll pending initiatives every 10s ──
+// ── Pending initiatives ──
 async function refreshInitiatives() {
-  const r = await fetch('/api/initiatives');
-  const items = await r.json();
+  const items = await fetch('/api/initiatives').then(r=>r.json());
   const el = document.getElementById('initiatives-list');
   if (!items.length) {
     el.innerHTML = '<div class="empty-state">No pending initiatives.<br>Agents check in every 4 hours.</div>';
     return;
   }
-  el.innerHTML = items.map(i => `
+  el.innerHTML = items.map(i=>`
     <div class="initiative" id="init-${i.id}">
       <div class="initiative-title">${i.title}</div>
       <div class="initiative-cost">Cost: ${i.cost}</div>
       <div class="initiative-pitch">${i.pitch}</div>
-      ${i.research ? `<div class="initiative-research">${i.research}</div>` : ''}
+      ${i.research?`<div class="initiative-research">${i.research}</div>`:''}
       <div class="btn-row">
-        <button class="btn btn-approve" onclick="decide(${i.id}, 'approve')">✓ Approve</button>
-        <button class="btn btn-reject"  onclick="decide(${i.id}, 'reject')">✗ Reject</button>
+        <button class="btn btn-approve" onclick="decide(${i.id},'approve')">✓ Approve</button>
+        <button class="btn btn-reject"  onclick="decide(${i.id},'reject')">✗ Reject</button>
       </div>
-    </div>
-  `).join('');
+    </div>`).join('');
 }
 
 async function decide(id, action) {
   const el = document.getElementById(`init-${id}`);
   if (el) el.style.opacity = '.4';
   await fetch(`/api/${action}/${id}`, {method:'POST'});
-  setTimeout(refreshInitiatives, 800);
+  setTimeout(refreshInitiatives, 600);
+  setTimeout(refreshTasks, 2000);
 }
 
+// ── Task tracker ──
+function stepIcon(status) {
+  if (status === 'done')        return {cls:'step-done',        txt:'✓'};
+  if (status === 'in-progress') return {cls:'step-in-progress', txt:'◌'};
+  if (status === 'error')       return {cls:'step-error',       txt:'✗'};
+  return {cls:'step-pending', txt:'·'};
+}
+
+async function refreshTasks() {
+  const tasks = await fetch('/api/tasks').then(r=>r.json());
+  const el = document.getElementById('tasks-list');
+  if (!tasks.length) {
+    el.innerHTML = '<div class="empty-state">No active tasks yet.<br>Approve an initiative to see agents work.</div>';
+    return;
+  }
+  el.innerHTML = tasks.map(task => {
+    const badge = task.status === 'done'
+      ? '<span class="task-badge badge-done">Done</span>'
+      : '<span class="task-badge badge-in-progress">In Progress</span>';
+    const steps = (task.steps||[]).map(s => {
+      const {cls, txt} = stepIcon(s.status);
+      const outputId = `out-${task.initiative_id}-${s.step}`;
+      const outputHtml = s.output
+        ? `<div class="step-output-toggle" onclick="toggleOutput('${outputId}')">Show output ▾</div>
+           <div class="step-output" id="${outputId}" style="display:none">${s.output}</div>`
+        : '';
+      return `
+        <div class="step-row">
+          <div class="step-icon ${cls}">${txt}</div>
+          <div class="step-body">
+            <div class="step-desc">${s.description}</div>
+            <div class="step-agent">${s.agent}</div>
+            ${outputHtml}
+          </div>
+        </div>`;
+    }).join('');
+    return `
+      <div class="task-block">
+        <div class="task-header">
+          <div class="task-title">${task.title}</div>
+          ${badge}
+        </div>
+        ${steps}
+      </div>`;
+  }).join('');
+}
+
+function toggleOutput(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const showing = el.style.display !== 'none';
+  el.style.display = showing ? 'none' : 'block';
+  el.previousElementSibling.textContent = showing ? 'Show output ▾' : 'Hide output ▴';
+}
+
+// ── Revenue ──
 async function logRevenue() {
   const amount = parseFloat(document.getElementById('rev-amount').value);
   const source = document.getElementById('rev-source').value || 'unspecified';
   if (!amount || amount <= 0) return alert('Enter a valid amount.');
-  await fetch('/api/revenue', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({amount, source})
-  });
+  await fetch('/api/revenue', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({amount,source})});
   document.getElementById('rev-amount').value = '';
   document.getElementById('rev-source').value = '';
   refreshStatus();
 }
 
-async function runNow() {
-  await fetch('/api/run-now', {method:'POST'});
-}
+async function runNow() { await fetch('/api/run-now', {method:'POST'}); }
 
-// Initial load + polling
-refreshStatus();
-refreshInitiatives();
-setInterval(refreshStatus, 8000);
+// Boot
+refreshStatus(); refreshInitiatives(); refreshTasks();
+setInterval(refreshStatus,      8000);
 setInterval(refreshInitiatives, 10000);
+setInterval(refreshTasks,       5000);
 </script>
 </body>
 </html>

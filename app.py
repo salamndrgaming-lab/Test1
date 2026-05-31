@@ -76,12 +76,19 @@ def _run_post_approval(initiative_id, title):
     """After CEO approval, Execution + Marketing run automatically."""
     with _agent_lock:
         try:
-            _emit("Execution Agent", f"Building launch plan for '{title}'...")
-            plan = execution.build_plan(initiative_id)
-            _emit("Execution Agent", plan)
-            _emit("Marketing Agent", f"Writing free promotion for '{title}'...")
-            content = marketing.create_content(title)
-            _emit("Marketing Agent", content)
+            _emit("Execution Agent", f"Starting launch plan for '{title}'...")
+            plan = execution.build_plan(
+                initiative_id,
+                emit=lambda msg: _emit("Execution Agent", msg),
+            )
+            _emit("Execution Agent", f"Launch plan complete for '{title}'.")
+            _emit("Marketing Agent", f"Starting promotion for '{title}'...")
+            content = marketing.create_content(
+                initiative_id,
+                title,
+                emit=lambda msg: _emit("Marketing Agent", msg),
+            )
+            _emit("Marketing Agent", f"Promotion ready for '{title}'.")
         except Exception as exc:
             _emit("Execution Agent", f"Post-approval error: {exc}")
 
@@ -194,6 +201,15 @@ def api_run_now():
     """CEO-triggered: run the strategy cycle immediately."""
     threading.Thread(target=_run_strategy_cycle, daemon=True).start()
     return jsonify({"ok": True})
+
+
+@app.route("/api/tasks")
+def api_tasks():
+    data = state.load()
+    tasks = data.get("tasks", [])
+    # Return active tasks first, then done, most recent first
+    tasks = sorted(tasks, key=lambda t: t.get("started_at", ""), reverse=True)
+    return jsonify(tasks[:20])
 
 
 @app.route("/api/log")

@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CEO Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0a0a0f;
+    color: #e2e8f0;
+    min-height: 100vh;
+  }
+
+  /* ── Layout ── */
+  .header {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    border-bottom: 1px solid #2d3748;
+    padding: 20px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .header h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: .05em; color: #f7fafc; }
+  .header .sub { font-size: .75rem; color: #718096; margin-top: 2px; }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #48bb78; display: inline-block; margin-right: 6px;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: auto auto auto;
+    gap: 20px;
+    padding: 24px 32px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  /* ── Cards ── */
+  .card {
+    background: #111827;
+    border: 1px solid #1f2937;
+    border-radius: 12px;
+    padding: 20px 24px;
+  }
+  .card-title {
+    font-size: .7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    color: #718096;
+    margin-bottom: 12px;
+  }
+
+  /* ── MRR card ── */
+  .mrr-card { grid-column: 1 / -1; }
+  .mrr-main {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .mrr-value { font-size: 3rem; font-weight: 800; color: #68d391; }
+  .mrr-goal  { font-size: 1.1rem; color: #718096; }
+  .progress-track {
+    background: #1f2937;
+    border-radius: 99px;
+    height: 10px;
+    overflow: hidden;
+    margin-bottom: 8px;
+  }
+  .progress-fill {
+    height: 100%;
+    border-radius: 99px;
+    background: linear-gradient(90deg, #38a169, #68d391);
+    transition: width .6s ease;
+    min-width: 2px;
+  }
+  .progress-label { font-size: .75rem; color: #718096; }
+
+  /* ── Stat cards ── */
+  .stat-big { font-size: 2rem; font-weight: 700; color: #e2e8f0; }
+  .stat-sub { font-size: .8rem; color: #718096; margin-top: 4px; }
+  .green { color: #68d391; }
+  .red   { color: #fc8181; }
+  .amber { color: #f6ad55; }
+
+  /* ── Milestones ── */
+  .milestones { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+  .milestone {
+    padding: 4px 12px; border-radius: 99px; font-size: .7rem; font-weight: 600;
+    border: 1px solid #2d3748; color: #4a5568; background: #1a202c;
+  }
+  .milestone.done { border-color: #276749; color: #68d391; background: #1c4532; }
+
+  /* ── Initiative cards ── */
+  .initiatives-card { grid-column: 1 / 3; max-height: 440px; overflow-y: auto; }
+  .initiative {
+    background: #1a202c;
+    border: 1px solid #2d3748;
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 12px;
+  }
+  .initiative:last-child { margin-bottom: 0; }
+  .initiative-title { font-size: 1rem; font-weight: 700; color: #f7fafc; margin-bottom: 6px; }
+  .initiative-cost  { font-size: .72rem; color: #68d391; margin-bottom: 10px; }
+  .initiative-pitch { font-size: .82rem; color: #a0aec0; line-height: 1.55; margin-bottom: 12px; }
+  .initiative-research {
+    font-size: .78rem; color: #9ae6b4; background: #1c4532;
+    border-radius: 6px; padding: 10px 12px; margin-bottom: 12px;
+    white-space: pre-wrap; line-height: 1.5;
+  }
+  .btn-row { display: flex; gap: 10px; }
+  .btn {
+    padding: 8px 20px; border-radius: 8px; font-size: .82rem;
+    font-weight: 600; border: none; cursor: pointer; transition: opacity .15s;
+  }
+  .btn:hover { opacity: .85; }
+  .btn-approve { background: #276749; color: #9ae6b4; }
+  .btn-reject  { background: #742a2a; color: #fc8181; }
+
+  .empty-state {
+    text-align: center; color: #4a5568; padding: 40px 0; font-size: .9rem;
+  }
+
+  /* ── Activity feed ── */
+  .feed-card { grid-column: 3; grid-row: 2 / 4; max-height: 640px; display: flex; flex-direction: column; }
+  .feed-log {
+    flex: 1; overflow-y: auto; display: flex; flex-direction: column-reverse;
+  }
+  .feed-entry {
+    padding: 8px 0;
+    border-bottom: 1px solid #1f2937;
+    font-size: .76rem;
+    line-height: 1.5;
+  }
+  .feed-time   { color: #4a5568; margin-right: 6px; }
+  .feed-actor  { font-weight: 700; margin-right: 6px; }
+  .feed-actor.strategy  { color: #76e4f7; }
+  .feed-actor.research  { color: #b794f4; }
+  .feed-actor.execution { color: #f6ad55; }
+  .feed-actor.marketing { color: #f687b3; }
+  .feed-actor.finance   { color: #68d391; }
+  .feed-actor.ceo       { color: #fbd38d; }
+  .feed-actor.scheduler { color: #718096; }
+  .feed-actor.system    { color: #718096; }
+  .feed-msg { color: #a0aec0; white-space: pre-wrap; }
+
+  /* ── Revenue form ── */
+  .revenue-card { grid-column: 1 / 3; }
+  .rev-row { display: flex; gap: 10px; }
+  .rev-input {
+    flex: 1; background: #1f2937; border: 1px solid #2d3748;
+    border-radius: 8px; padding: 8px 14px;
+    color: #e2e8f0; font-size: .85rem; outline: none;
+  }
+  .rev-input:focus { border-color: #4a5568; }
+  .btn-log { background: #2b6cb0; color: #bee3f8; }
+
+  /* ── Run now button ── */
+  .run-btn {
+    background: none; border: 1px solid #2d3748; color: #718096;
+    padding: 6px 14px; border-radius: 8px; font-size: .75rem;
+    cursor: pointer; transition: all .15s;
+  }
+  .run-btn:hover { border-color: #4a5568; color: #e2e8f0; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>CEO Dashboard</h1>
+    <div class="sub">Goal: $10,000 / month &nbsp;·&nbsp; Free stack &nbsp;·&nbsp; Agents run automatically</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <span style="font-size:.75rem;color:#718096"><span class="live-dot"></span>Live</span>
+    <button class="run-btn" onclick="runNow()">⚡ Run agents now</button>
+  </div>
+</div>
+
+<div class="grid">
+
+  <!-- MRR -->
+  <div class="card mrr-card">
+    <div class="card-title">Monthly Recurring Revenue</div>
+    <div class="mrr-main">
+      <span class="mrr-value" id="mrr">$0</span>
+      <span class="mrr-goal">/ $10,000 goal</span>
+    </div>
+    <div class="progress-track">
+      <div class="progress-fill" id="progress-fill" style="width:0%"></div>
+    </div>
+    <div class="progress-label" id="progress-label">0% of goal</div>
+    <div class="milestones" id="milestones"></div>
+  </div>
+
+  <!-- Net / expenses -->
+  <div class="card">
+    <div class="card-title">Net This Month</div>
+    <div class="stat-big green" id="net">$0</div>
+    <div class="stat-sub">Expenses: <span id="expenses">$0</span></div>
+  </div>
+
+  <!-- Initiative counts -->
+  <div class="card">
+    <div class="card-title">Initiatives</div>
+    <div class="stat-big" id="approved-count">0</div>
+    <div class="stat-sub">Approved &nbsp;·&nbsp; <span id="rejected-count" class="red">0</span> rejected</div>
+  </div>
+
+  <!-- Pending approvals -->
+  <div class="card initiatives-card">
+    <div class="card-title">Waiting for Your Approval</div>
+    <div id="initiatives-list"><div class="empty-state">No pending initiatives.<br>Agents will propose one shortly.</div></div>
+  </div>
+
+  <!-- Live feed -->
+  <div class="card feed-card">
+    <div class="card-title">Live Agent Activity</div>
+    <div class="feed-log" id="feed"></div>
+  </div>
+
+  <!-- Log revenue -->
+  <div class="card revenue-card">
+    <div class="card-title">Log Revenue</div>
+    <div class="rev-row">
+      <input class="rev-input" id="rev-amount" type="number" placeholder="Amount ($)" step="0.01">
+      <input class="rev-input" id="rev-source" type="text" placeholder="Source (e.g. Etsy sale)">
+      <button class="btn btn-log" onclick="logRevenue()">Log it</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── SSE live feed ──
+const feed = document.getElementById('feed');
+const actorColors = {
+  'strategy agent': 'strategy', 'research agent': 'research',
+  'execution agent': 'execution', 'marketing agent': 'marketing',
+  'finance agent': 'finance', 'ceo': 'ceo',
+  'scheduler': 'scheduler', 'system': 'system',
+};
+
+function actorClass(actor) {
+  return actorColors[actor.toLowerCase()] || 'system';
+}
+
+function appendFeed(entry) {
+  const div = document.createElement('div');
+  div.className = 'feed-entry';
+  div.innerHTML =
+    `<span class="feed-time">${entry.time}</span>` +
+    `<span class="feed-actor ${actorClass(entry.actor)}">${entry.actor}</span>` +
+    `<span class="feed-msg">${entry.message}</span>`;
+  feed.prepend(div);
+  // keep max 100 entries
+  while (feed.children.length > 100) feed.removeChild(feed.lastChild);
+}
+
+const es = new EventSource('/stream');
+es.onmessage = e => {
+  try { appendFeed(JSON.parse(e.data)); } catch {}
+};
+
+// ── Poll status every 8s ──
+async function refreshStatus() {
+  const r = await fetch('/api/status');
+  const d = await r.json();
+
+  document.getElementById('mrr').textContent = '$' + d.mrr.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  document.getElementById('net').textContent = '$' + d.net.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  document.getElementById('expenses').textContent = '$' + d.expenses.toLocaleString();
+  document.getElementById('approved-count').textContent = d.approved_count;
+  document.getElementById('rejected-count').textContent = d.rejected_count;
+  document.getElementById('progress-fill').style.width = Math.min(d.pct, 100) + '%';
+  document.getElementById('progress-label').textContent = d.pct + '% of goal';
+
+  const ms = d.milestones;
+  const labels = [['first_dollar','First $1'],['100_mrr','$100/mo'],['1000_mrr','$1k/mo'],['5000_mrr','$5k/mo'],['10000_mrr','$10k/mo']];
+  document.getElementById('milestones').innerHTML = labels.map(([k,l]) =>
+    `<span class="milestone ${ms[k]?'done':''}">${ms[k]?'✓ ':''} ${l}</span>`
+  ).join('');
+}
+
+// ── Poll pending initiatives every 10s ──
+async function refreshInitiatives() {
+  const r = await fetch('/api/initiatives');
+  const items = await r.json();
+  const el = document.getElementById('initiatives-list');
+  if (!items.length) {
+    el.innerHTML = '<div class="empty-state">No pending initiatives.<br>Agents check in every 4 hours.</div>';
+    return;
+  }
+  el.innerHTML = items.map(i => `
+    <div class="initiative" id="init-${i.id}">
+      <div class="initiative-title">${i.title}</div>
+      <div class="initiative-cost">Cost: ${i.cost}</div>
+      <div class="initiative-pitch">${i.pitch}</div>
+      ${i.research ? `<div class="initiative-research">${i.research}</div>` : ''}
+      <div class="btn-row">
+        <button class="btn btn-approve" onclick="decide(${i.id}, 'approve')">✓ Approve</button>
+        <button class="btn btn-reject"  onclick="decide(${i.id}, 'reject')">✗ Reject</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function decide(id, action) {
+  const el = document.getElementById(`init-${id}`);
+  if (el) el.style.opacity = '.4';
+  await fetch(`/api/${action}/${id}`, {method:'POST'});
+  setTimeout(refreshInitiatives, 800);
+}
+
+async function logRevenue() {
+  const amount = parseFloat(document.getElementById('rev-amount').value);
+  const source = document.getElementById('rev-source').value || 'unspecified';
+  if (!amount || amount <= 0) return alert('Enter a valid amount.');
+  await fetch('/api/revenue', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({amount, source})
+  });
+  document.getElementById('rev-amount').value = '';
+  document.getElementById('rev-source').value = '';
+  refreshStatus();
+}
+
+async function runNow() {
+  await fetch('/api/run-now', {method:'POST'});
+}
+
+// Initial load + polling
+refreshStatus();
+refreshInitiatives();
+setInterval(refreshStatus, 8000);
+setInterval(refreshInitiatives, 10000);
+</script>
+</body>
+</html>

@@ -8,8 +8,19 @@ Run it with:  python main.py
 (Free Groq key required: https://console.groq.com  -> set GROQ_API_KEY)
 """
 
+import os
+
 from agents import finance, research
 from core import orchestrator, state
+
+
+def _demo_banner():
+    if not os.environ.get("GROQ_API_KEY", "").strip():
+        print(
+            "\n  *** DEMO MODE — no API key set ***"
+            "\n  Agents will reply with scripted responses so you can see the flow."
+            "\n  When ready for real agents: https://console.groq.com (free key)\n"
+        )
 
 MENU = """
 ==================== CEO DASHBOARD ====================
@@ -64,6 +75,7 @@ def record_revenue():
 
 def main():
     print("\nWelcome, CEO. Your AI organization is online.")
+    _demo_banner()
     while True:
         show_status()
         print(MENU)

@@ -18,7 +18,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, Response, jsonify, render_template, request
 
 from agents import execution, finance, marketing, research, strategy
-from core import state
+from core import state, vault
 
 app = Flask(__name__)
 
@@ -216,6 +216,41 @@ def api_resolve_blocker(initiative_id, blocker_id):
     state.resolve_blocker(initiative_id, blocker_id)
     state.log("CEO", f"Resolved blocker #{blocker_id} on initiative #{initiative_id}")
     _emit("CEO", f"Marked blocker resolved on initiative #{initiative_id}")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/accounts")
+def api_accounts():
+    return jsonify(vault.list_accounts(reveal=False))
+
+
+@app.route("/api/accounts/<int:account_id>/reveal")
+def api_account_reveal(account_id):
+    acct = vault.get_account(account_id)
+    if not acct:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"id": acct["id"], "password": acct.get("password", "")})
+
+
+@app.route("/api/accounts", methods=["POST"])
+def api_account_add():
+    b = request.json or {}
+    if not b.get("service"):
+        return jsonify({"error": "service required"}), 400
+    aid = vault.add_account(
+        service=b.get("service"),
+        email=b.get("email", ""),
+        password=b.get("password", ""),
+        username=b.get("username", ""),
+        url=b.get("url", ""),
+        notes=b.get("notes", ""),
+    )
+    return jsonify({"ok": True, "id": aid})
+
+
+@app.route("/api/accounts/<int:account_id>", methods=["DELETE"])
+def api_account_delete(account_id):
+    vault.delete_account(account_id)
     return jsonify({"ok": True})
 
 

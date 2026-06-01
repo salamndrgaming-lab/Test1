@@ -4,8 +4,10 @@ Execution Agent — turns CEO-APPROVED initiatives into concrete action plans.
 Guardrail: it refuses to act on anything that is not approved.
 """
 
+import os
 import re
 
+from agents import operator
 from core import llm, state
 
 SYSTEM = """You are the Execution Agent. You take an APPROVED initiative and
@@ -56,48 +58,33 @@ STEP 2: <what to do>
     raw = llm.ask(SYSTEM, prompt)
     steps_text = _parse_steps(raw)
 
-    step_defs = [{"agent": "Execution Agent", "description": s} for s in steps_text]
+    # The Operator agent owns each step now.
+    step_defs = [{"agent": "Operator Agent", "description": s} for s in steps_text]
     state.create_task(initiative_id, initiative["title"], step_defs)
 
+    base_email = _ceo_email()
     full_plan = []
     for idx, step_desc in enumerate(steps_text):
         step_num = idx + 1
         state.update_task_step(initiative_id, step_num, "in-progress")
-        _log(emit, f"Working on Step {step_num}: {step_desc[:80]}...")
+        _log(emit, f"Operator working on Step {step_num}: {step_desc[:70]}...")
 
-        detail_prompt = f"""Initiative: {initiative['title']}
-Step {step_num}: {step_desc}
+        kind, detail = operator.run_step(
+            initiative_id, step_num, initiative["title"], step_desc,
+            base_email=base_email, emit=emit,
+        )
 
-Give one short paragraph of specific how-to for this step using only free tools.
-If this step produces a real URL or page, add: RESULT: <label> | URL: <url>
-If this step requires manual action from the CEO first, add: CEO_ACTION: <instruction> | LINK: <url or blank>"""
+        # NEEDS_YOU steps stay 'blocked' visually; AUTO steps complete.
+        status = "blocked" if kind == "needs_you" else "done"
+        state.update_task_step(initiative_id, step_num, status, output=detail)
+        full_plan.append(f"STEP {step_num}: {step_desc}\n{detail}")
 
-        detail = llm.ask(SYSTEM, detail_prompt)
-
-        # Parse and store any RESULT or CEO_ACTION markers
-        clean_detail = _extract_markers(detail, initiative_id)
-
-        state.update_task_step(initiative_id, step_num, "done", output=clean_detail)
-        full_plan.append(f"STEP {step_num}: {step_desc}\n{clean_detail}")
-
-    state.log("Execution Agent", f"Completed launch plan for #{initiative_id}")
+    state.log("Execution Agent", f"Operator ran all steps for #{initiative_id}")
     return "\n\n".join(full_plan)
 
 
-def _extract_markers(text, initiative_id):
-    """Pull RESULT and CEO_ACTION lines out of LLM output, store them, return clean text."""
-    clean_lines = []
-    for line in text.splitlines():
-        r = re.match(r"RESULT\s*:\s*(.+?)\s*\|\s*URL\s*:\s*(.+)", line, re.IGNORECASE)
-        if r:
-            state.add_task_result(initiative_id, r.group(1).strip(), r.group(2).strip())
-            continue
-        a = re.match(r"CEO_ACTION\s*:\s*(.+?)\s*\|\s*LINK\s*:\s*(.*)", line, re.IGNORECASE)
-        if a:
-            state.add_task_blocker(initiative_id, a.group(1).strip(), a.group(2).strip())
-            continue
-        clean_lines.append(line)
-    return "\n".join(clean_lines).strip()
+def _ceo_email():
+    return os.environ.get("CEO_EMAIL", "you@example.com")
 
 
 def _parse_steps(text):

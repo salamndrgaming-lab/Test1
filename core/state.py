@@ -106,9 +106,11 @@ def update_task_step(initiative_id, step_num, status, output=None):
                     step["output"] = output
                     step["updated_at"] = datetime.now().isoformat(timespec="seconds")
                     break
-            all_terminal = all(st["status"] in ("done", "error") for st in task["steps"])
+            all_terminal = all(st["status"] in ("done", "error", "blocked") for st in task["steps"])
             if all_terminal:
-                task["status"] = "done"
+                # If anything still needs the CEO, the task is "waiting", else "done"
+                any_blocked = any(st["status"] == "blocked" for st in task["steps"])
+                task["status"] = "waiting" if any_blocked else "done"
             break
     save(s)
 

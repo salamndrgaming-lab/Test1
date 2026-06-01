@@ -1,1 +1,9 @@
 __pycache__/
+*.pyc
+
+# Credential vault — NEVER commit these
+data/.vault_key
+data/.vault.enc
+
+# Agent-generated work products (local only)
+data/deliverables/

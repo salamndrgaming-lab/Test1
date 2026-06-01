@@ -100,6 +100,7 @@
   .task-badge { font-size: .65rem; font-weight: 700; padding: 2px 9px; border-radius: 99px; text-transform: uppercase; letter-spacing: .05em; }
   .badge-in-progress { background: #2a4365; color: #63b3ed; }
   .badge-done        { background: #1c4532; color: #68d391; }
+  .badge-waiting     { background: #744210; color: #fbd38d; }
 
   /* blocker callouts */
   .blocker-section { margin-bottom: 10px; }
@@ -144,6 +145,7 @@
   .step-in-progress { background: #2a4365; color: #63b3ed; animation: spin 1.5s linear infinite; }
   .step-done        { background: #1c4532; color: #68d391; }
   .step-error       { background: #742a2a; color: #fc8181; }
+  .step-blocked     { background: #744210; color: #fbd38d; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .step-body  { flex: 1; min-width: 0; }
   .step-desc  { font-size: .78rem; color: #a0aec0; margin-bottom: 3px; }
@@ -167,6 +169,23 @@
   .feed-actor.scheduler { color: #718096; }
   .feed-actor.system    { color: #718096; }
   .feed-msg { color: #a0aec0; white-space: pre-wrap; word-break: break-word; }
+
+  /* ── Accounts vault ── */
+  .accounts-card { grid-column: 1 / 3; }
+  .acct-row {
+    display: flex; align-items: center; gap: 10px;
+    background: #1a202c; border: 1px solid #2d3748;
+    border-radius: 8px; padding: 9px 12px; margin-bottom: 6px;
+  }
+  .acct-service { font-weight: 700; font-size: .82rem; color: #f7fafc; min-width: 90px; }
+  .acct-email   { font-size: .76rem; color: #a0aec0; flex: 1; word-break: break-all; }
+  .acct-pass    { font-size: .78rem; color: #fbd38d; font-family: monospace; min-width: 80px; }
+  .acct-show    { font-size: .68rem; color: #4299e1; cursor: pointer; }
+  .acct-show:hover { text-decoration: underline; }
+  .acct-del     { font-size: .8rem; color: #718096; cursor: pointer; background: none; border: none; }
+  .acct-del:hover { color: #fc8181; }
+  .acct-add-row { display: flex; gap: 8px; margin-top: 10px; }
+  .acct-link    { font-size: .68rem; color: #63b3ed; }
 
   /* ── Revenue ── */
   .revenue-card { grid-column: 1 / 3; }
@@ -249,6 +268,18 @@
     </div>
   </div>
 
+  <!-- Accounts & Access vault -->
+  <div class="card accounts-card">
+    <div class="card-title">🔑 Accounts &amp; Access</div>
+    <div id="accounts-list"><div class="empty-state">No accounts yet.<br>When agents have you create one, it appears here.</div></div>
+    <div class="acct-add-row">
+      <input class="rev-input" id="acct-service" placeholder="Service">
+      <input class="rev-input" id="acct-email" placeholder="Email / user">
+      <input class="rev-input" id="acct-pass" placeholder="Password" type="text">
+      <button class="btn btn-log" onclick="addAccount()">Save</button>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -327,6 +358,7 @@ function stepIcon(status) {
   if (status === 'done')        return {cls:'step-done',        txt:'✓'};
   if (status === 'in-progress') return {cls:'step-in-progress', txt:'◌'};
   if (status === 'error')       return {cls:'step-error',       txt:'✗'};
+  if (status === 'blocked')     return {cls:'step-blocked',     txt:'⚠'};
   return {cls:'step-pending', txt:'·'};
 }
 
@@ -343,6 +375,8 @@ async function refreshTasks() {
     const iid = task.initiative_id;
     const badge = task.status === 'done'
       ? '<span class="task-badge badge-done">Done</span>'
+      : task.status === 'waiting'
+      ? '<span class="task-badge badge-waiting">Needs You</span>'
       : '<span class="task-badge badge-in-progress">In Progress</span>';
 
     // ── Blockers (CEO action required) ──
@@ -434,11 +468,56 @@ async function logRevenue() {
 
 async function runNow() { await fetch('/api/run-now', {method:'POST'}); }
 
+// ── Accounts vault ──
+async function refreshAccounts() {
+  const accts = await fetch('/api/accounts').then(r=>r.json());
+  const el = document.getElementById('accounts-list');
+  if (!accts.length) {
+    el.innerHTML = '<div class="empty-state">No accounts yet.<br>When agents have you create one, it appears here.</div>';
+    return;
+  }
+  el.innerHTML = accts.map(a=>`
+    <div class="acct-row">
+      <span class="acct-service">${esc(a.service)}</span>
+      <span class="acct-email">${esc(a.email||a.username||'')}${a.url?` · <a class="acct-link" href="${esc(a.url)}" target="_blank">open ↗</a>`:''}</span>
+      <span class="acct-pass" id="pw-${a.id}">${esc(a.password||'—')}</span>
+      ${a.password?`<span class="acct-show" onclick="revealPw(${a.id})">show</span>`:''}
+      <button class="acct-del" onclick="delAccount(${a.id})" title="Delete">✕</button>
+    </div>`).join('');
+}
+
+async function revealPw(id) {
+  const el = document.getElementById('pw-'+id);
+  if (el.dataset.shown === '1') { el.textContent = '••••••'; el.dataset.shown=''; return; }
+  const d = await fetch(`/api/accounts/${id}/reveal`).then(r=>r.json());
+  el.textContent = d.password || '—';
+  el.dataset.shown = '1';
+}
+
+async function addAccount() {
+  const service = document.getElementById('acct-service').value.trim();
+  const email   = document.getElementById('acct-email').value.trim();
+  const password= document.getElementById('acct-pass').value;
+  if (!service) return alert('Enter a service name.');
+  await fetch('/api/accounts', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({service,email,password})});
+  document.getElementById('acct-service').value='';
+  document.getElementById('acct-email').value='';
+  document.getElementById('acct-pass').value='';
+  refreshAccounts();
+}
+
+async function delAccount(id) {
+  if (!confirm('Delete this saved account?')) return;
+  await fetch(`/api/accounts/${id}`, {method:'DELETE'});
+  refreshAccounts();
+}
+
 // Boot
-refreshStatus(); refreshInitiatives(); refreshTasks();
+refreshStatus(); refreshInitiatives(); refreshTasks(); refreshAccounts();
 setInterval(refreshStatus,      8000);
 setInterval(refreshInitiatives, 10000);
 setInterval(refreshTasks,       5000);
+setInterval(refreshAccounts,    9000);
 </script>
 </body>
 </html>

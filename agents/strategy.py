@@ -21,12 +21,28 @@ Be concrete and honest about effort and odds. No hype."""
 def propose(context=""):
     """Generate ONE concrete initiative and queue it for CEO approval."""
     data = state.load()
+
+    # Build readable history so the model knows what to avoid
+    seen = {i["id"]: i for i in data["initiatives"]}
+    approved_titles = [seen[i]["title"] for i in data["approved_initiatives"] if i in seen]
+    rejected_titles = [seen[i]["title"] for i in data["rejected_initiatives"] if i in seen]
+    pending_titles  = [i["title"] for i in data["initiatives"] if i["status"] == "pending"]
+
+    history = ""
+    if approved_titles:
+        history += f"APPROVED (already running — do not repeat):\n" + "\n".join(f"  - {t}" for t in approved_titles) + "\n"
+    if rejected_titles:
+        history += f"REJECTED (CEO said no — do not propose these or anything similar):\n" + "\n".join(f"  - {t}" for t in rejected_titles) + "\n"
+    if pending_titles:
+        history += f"PENDING (already waiting for approval — do not duplicate):\n" + "\n".join(f"  - {t}" for t in pending_titles) + "\n"
+
     prompt = f"""Current MRR: ${data['mrr']} / goal ${data['goal_mrr']}.
-Already approved: {data['approved_initiatives']}
-Already rejected: {data['rejected_initiatives']}
+
+{history if history else "No prior initiatives yet."}
 Extra context from CEO: {context or '(none)'}
 
-Propose exactly ONE new revenue initiative. Respond in this format:
+Propose exactly ONE brand-new revenue initiative that is clearly different from
+everything listed above. Respond in this format:
 
 TITLE: <short name>
 COST: <free, or estimated $/mo if any>

@@ -106,10 +106,57 @@ def update_task_step(initiative_id, step_num, status, output=None):
                     step["output"] = output
                     step["updated_at"] = datetime.now().isoformat(timespec="seconds")
                     break
-            # Mark whole task done when all steps are done/error
             all_terminal = all(st["status"] in ("done", "error") for st in task["steps"])
             if all_terminal:
                 task["status"] = "done"
+            break
+    save(s)
+
+
+def add_task_result(initiative_id, label, url, description=""):
+    """Record a link/product the agents produced for this initiative."""
+    s = load()
+    for task in s.get("tasks", []):
+        if task["initiative_id"] == initiative_id:
+            task.setdefault("results", []).append({
+                "label": label,
+                "url": url,
+                "description": description,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+            })
+            break
+    save(s)
+
+
+def add_task_blocker(initiative_id, message, link=""):
+    """Flag something the agent cannot do — needs CEO action."""
+    s = load()
+    for task in s.get("tasks", []):
+        if task["initiative_id"] == initiative_id:
+            blockers = task.setdefault("blockers", [])
+            bid = len(blockers) + 1
+            blockers.append({
+                "id": bid,
+                "message": message,
+                "link": link,
+                "resolved": False,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+            })
+            break
+    save(s)
+    return bid
+
+
+def resolve_blocker(initiative_id, blocker_id):
+    """Mark a CEO-action blocker as resolved."""
+    s = load()
+    for task in s.get("tasks", []):
+        if task["initiative_id"] == initiative_id:
+            for b in task.get("blockers", []):
+                if b["id"] == blocker_id:
+                    b["resolved"] = True
+                    b["resolved_at"] = datetime.now().isoformat(timespec="seconds")
+                    break
             break
     save(s)
 

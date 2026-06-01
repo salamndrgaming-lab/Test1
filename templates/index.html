@@ -95,15 +95,48 @@
   .tasks-card { grid-column: 2 / 3; max-height: 500px; overflow-y: auto; }
   .task-block { background: #1a202c; border: 1px solid #2d3748; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
   .task-block:last-child { margin-bottom: 0; }
-  .task-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .task-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   .task-title { font-size: .9rem; font-weight: 700; color: #f7fafc; }
-  .task-badge {
-    font-size: .65rem; font-weight: 700; padding: 2px 9px; border-radius: 99px;
-    text-transform: uppercase; letter-spacing: .05em;
-  }
+  .task-badge { font-size: .65rem; font-weight: 700; padding: 2px 9px; border-radius: 99px; text-transform: uppercase; letter-spacing: .05em; }
   .badge-in-progress { background: #2a4365; color: #63b3ed; }
   .badge-done        { background: #1c4532; color: #68d391; }
 
+  /* blocker callouts */
+  .blocker-section { margin-bottom: 10px; }
+  .blocker {
+    display: flex; align-items: flex-start; gap: 10px;
+    background: #2d1f0a; border: 1px solid #744210;
+    border-radius: 8px; padding: 10px 12px; margin-bottom: 6px;
+  }
+  .blocker.resolved { opacity: .4; }
+  .blocker-icon { font-size: 1rem; flex-shrink: 0; }
+  .blocker-body { flex: 1; min-width: 0; }
+  .blocker-msg  { font-size: .8rem; color: #fbd38d; font-weight: 600; margin-bottom: 4px; }
+  .blocker-link { font-size: .72rem; color: #63b3ed; word-break: break-all; }
+  .blocker-link a { color: inherit; }
+  .btn-resolve {
+    font-size: .68rem; background: #744210; color: #fbd38d;
+    border: none; border-radius: 6px; padding: 4px 10px; cursor: pointer;
+    flex-shrink: 0; margin-top: 2px;
+  }
+  .btn-resolve:hover { background: #975a16; }
+
+  /* results section */
+  .results-section { margin-bottom: 10px; }
+  .results-title { font-size: .65rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #4a5568; margin-bottom: 6px; }
+  .result-link {
+    display: flex; align-items: center; gap: 8px;
+    background: #1a2e1f; border: 1px solid #276749;
+    border-radius: 7px; padding: 8px 12px; margin-bottom: 5px;
+    text-decoration: none;
+  }
+  .result-link:hover { border-color: #48bb78; }
+  .result-label { font-size: .8rem; font-weight: 600; color: #9ae6b4; flex: 1; }
+  .result-url   { font-size: .68rem; color: #4a5568; word-break: break-all; }
+  .result-arrow { color: #48bb78; font-size: .8rem; }
+
+  /* steps */
+  .steps-title { font-size: .65rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #4a5568; margin-bottom: 6px; }
   .step-row { display: flex; align-items: flex-start; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1f2937; }
   .step-row:last-child { border-bottom: none; }
   .step-icon { width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0; margin-top: 1px; display: flex; align-items: center; justify-content: center; font-size: .65rem; font-weight: 700; }
@@ -112,15 +145,10 @@
   .step-done        { background: #1c4532; color: #68d391; }
   .step-error       { background: #742a2a; color: #fc8181; }
   @keyframes spin { to { transform: rotate(360deg); } }
-
-  .step-body { flex: 1; min-width: 0; }
-  .step-desc { font-size: .78rem; color: #a0aec0; margin-bottom: 3px; }
+  .step-body  { flex: 1; min-width: 0; }
+  .step-desc  { font-size: .78rem; color: #a0aec0; margin-bottom: 3px; }
   .step-agent { font-size: .68rem; color: #4a5568; }
-  .step-output {
-    font-size: .74rem; color: #9ae6b4; background: #1c4532;
-    border-radius: 5px; padding: 7px 10px; margin-top: 6px;
-    white-space: pre-wrap; line-height: 1.5; max-height: 140px; overflow-y: auto;
-  }
+  .step-output { font-size: .74rem; color: #9ae6b4; background: #1c4532; border-radius: 5px; padding: 7px 10px; margin-top: 6px; white-space: pre-wrap; line-height: 1.5; max-height: 140px; overflow-y: auto; }
   .step-output-toggle { font-size: .68rem; color: #4299e1; cursor: pointer; margin-top: 3px; }
   .step-output-toggle:hover { text-decoration: underline; }
 
@@ -302,6 +330,8 @@ function stepIcon(status) {
   return {cls:'step-pending', txt:'·'};
 }
 
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
 async function refreshTasks() {
   const tasks = await fetch('/api/tasks').then(r=>r.json());
   const el = document.getElementById('tasks-list');
@@ -310,32 +340,69 @@ async function refreshTasks() {
     return;
   }
   el.innerHTML = tasks.map(task => {
+    const iid = task.initiative_id;
     const badge = task.status === 'done'
       ? '<span class="task-badge badge-done">Done</span>'
       : '<span class="task-badge badge-in-progress">In Progress</span>';
+
+    // ── Blockers (CEO action required) ──
+    const blockers = (task.blockers||[]);
+    const openBlockers = blockers.filter(b=>!b.resolved);
+    const blockersHtml = blockers.length ? `
+      <div class="blocker-section">
+        ${blockers.map(b=>`
+          <div class="blocker ${b.resolved?'resolved':''}">
+            <div class="blocker-icon">${b.resolved?'✓':'⚠'}</div>
+            <div class="blocker-body">
+              <div class="blocker-msg">${b.resolved?'<s>':''}${esc(b.message)}${b.resolved?'</s>':''}</div>
+              ${b.link?`<div class="blocker-link"><a href="${esc(b.link)}" target="_blank">${esc(b.link)}</a></div>`:''}
+            </div>
+            ${!b.resolved?`<button class="btn-resolve" onclick="resolveBlocker(${iid},${b.id})">Done ✓</button>`:''}
+          </div>`).join('')}
+      </div>` : '';
+
+    // ── Results (links/products) ──
+    const results = (task.results||[]);
+    const resultsHtml = results.length ? `
+      <div class="results-section">
+        <div class="results-title">Results &amp; Links</div>
+        ${results.map(r=>`
+          <a class="result-link" href="${esc(r.url)}" target="_blank">
+            <span class="result-label">${esc(r.label)}</span>
+            <span class="result-url">${esc(r.url)}</span>
+            <span class="result-arrow">↗</span>
+          </a>`).join('')}
+      </div>` : '';
+
+    // ── Steps ──
     const steps = (task.steps||[]).map(s => {
       const {cls, txt} = stepIcon(s.status);
-      const outputId = `out-${task.initiative_id}-${s.step}`;
+      const outputId = `out-${iid}-${s.step}`;
       const outputHtml = s.output
         ? `<div class="step-output-toggle" onclick="toggleOutput('${outputId}')">Show output ▾</div>
-           <div class="step-output" id="${outputId}" style="display:none">${s.output}</div>`
+           <div class="step-output" id="${outputId}" style="display:none">${esc(s.output)}</div>`
         : '';
       return `
         <div class="step-row">
           <div class="step-icon ${cls}">${txt}</div>
           <div class="step-body">
-            <div class="step-desc">${s.description}</div>
-            <div class="step-agent">${s.agent}</div>
+            <div class="step-desc">${esc(s.description)}</div>
+            <div class="step-agent">${esc(s.agent)}</div>
             ${outputHtml}
           </div>
         </div>`;
     }).join('');
+
+    const hasBlocker = openBlockers.length > 0;
     return `
-      <div class="task-block">
+      <div class="task-block" style="${hasBlocker?'border-color:#744210':''}">
         <div class="task-header">
-          <div class="task-title">${task.title}</div>
+          <div class="task-title">${esc(task.title)}</div>
           ${badge}
         </div>
+        ${blockersHtml}
+        ${resultsHtml}
+        <div class="steps-title">Steps</div>
         ${steps}
       </div>`;
   }).join('');
@@ -347,6 +414,11 @@ function toggleOutput(id) {
   const showing = el.style.display !== 'none';
   el.style.display = showing ? 'none' : 'block';
   el.previousElementSibling.textContent = showing ? 'Show output ▾' : 'Hide output ▴';
+}
+
+async function resolveBlocker(initiativeId, blockerId) {
+  await fetch(`/api/tasks/${initiativeId}/resolve-blocker/${blockerId}`, {method:'POST'});
+  refreshTasks();
 }
 
 // ── Revenue ──

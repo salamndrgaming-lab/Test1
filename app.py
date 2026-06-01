@@ -207,9 +207,16 @@ def api_run_now():
 def api_tasks():
     data = state.load()
     tasks = data.get("tasks", [])
-    # Return active tasks first, then done, most recent first
     tasks = sorted(tasks, key=lambda t: t.get("started_at", ""), reverse=True)
     return jsonify(tasks[:20])
+
+
+@app.route("/api/tasks/<int:initiative_id>/resolve-blocker/<int:blocker_id>", methods=["POST"])
+def api_resolve_blocker(initiative_id, blocker_id):
+    state.resolve_blocker(initiative_id, blocker_id)
+    state.log("CEO", f"Resolved blocker #{blocker_id} on initiative #{initiative_id}")
+    _emit("CEO", f"Marked blocker resolved on initiative #{initiative_id}")
+    return jsonify({"ok": True})
 
 
 @app.route("/api/log")

@@ -10,8 +10,17 @@ from core import llm, state
 
 SYSTEM = """You are the Execution Agent. You take an APPROVED initiative and
 produce a concrete, ordered action plan using only free tools.
-Each step must start with 'STEP N:' on its own line (e.g. 'STEP 1: ...).
-Max 7 steps. Be specific and actionable. No fluff."""
+Each step must start with 'STEP N:' on its own line (e.g. 'STEP 1: ...').
+Max 7 steps. Be specific and actionable. No fluff.
+
+When a step produces a real link or page the CEO can visit, end that step's
+detail with a line formatted exactly:
+RESULT: <short label> | URL: <full url>
+
+When a step requires the CEO to manually do something before the agent can
+continue (e.g. create an account, supply an API key, paste a URL back), end
+that step's detail with a line formatted exactly:
+CEO_ACTION: <clear one-sentence instruction> | LINK: <url or blank>"""
 
 
 def build_plan(initiative_id, emit=None):
@@ -42,16 +51,14 @@ Write a step-by-step launch plan using only free tools.
 Format EVERY step exactly like this (required):
 STEP 1: <what to do>
 STEP 2: <what to do>
-...up to STEP 7. Be concrete. Mark the first step the CEO can do TODAY."""
+...up to STEP 7. Be concrete."""
 
     raw = llm.ask(SYSTEM, prompt)
     steps_text = _parse_steps(raw)
 
-    # Register all steps in state as pending
     step_defs = [{"agent": "Execution Agent", "description": s} for s in steps_text]
     state.create_task(initiative_id, initiative["title"], step_defs)
 
-    # "Execute" each step: mark in-progress, generate detail, mark done
     full_plan = []
     for idx, step_desc in enumerate(steps_text):
         step_num = idx + 1
@@ -61,14 +68,36 @@ STEP 2: <what to do>
         detail_prompt = f"""Initiative: {initiative['title']}
 Step {step_num}: {step_desc}
 
-Give one short paragraph of specific how-to for this step using only free tools."""
+Give one short paragraph of specific how-to for this step using only free tools.
+If this step produces a real URL or page, add: RESULT: <label> | URL: <url>
+If this step requires manual action from the CEO first, add: CEO_ACTION: <instruction> | LINK: <url or blank>"""
+
         detail = llm.ask(SYSTEM, detail_prompt)
 
-        state.update_task_step(initiative_id, step_num, "done", output=detail)
-        full_plan.append(f"STEP {step_num}: {step_desc}\n{detail}")
+        # Parse and store any RESULT or CEO_ACTION markers
+        clean_detail = _extract_markers(detail, initiative_id)
+
+        state.update_task_step(initiative_id, step_num, "done", output=clean_detail)
+        full_plan.append(f"STEP {step_num}: {step_desc}\n{clean_detail}")
 
     state.log("Execution Agent", f"Completed launch plan for #{initiative_id}")
     return "\n\n".join(full_plan)
+
+
+def _extract_markers(text, initiative_id):
+    """Pull RESULT and CEO_ACTION lines out of LLM output, store them, return clean text."""
+    clean_lines = []
+    for line in text.splitlines():
+        r = re.match(r"RESULT\s*:\s*(.+?)\s*\|\s*URL\s*:\s*(.+)", line, re.IGNORECASE)
+        if r:
+            state.add_task_result(initiative_id, r.group(1).strip(), r.group(2).strip())
+            continue
+        a = re.match(r"CEO_ACTION\s*:\s*(.+?)\s*\|\s*LINK\s*:\s*(.*)", line, re.IGNORECASE)
+        if a:
+            state.add_task_blocker(initiative_id, a.group(1).strip(), a.group(2).strip())
+            continue
+        clean_lines.append(line)
+    return "\n".join(clean_lines).strip()
 
 
 def _parse_steps(text):
@@ -78,7 +107,6 @@ def _parse_steps(text):
         m = re.match(r"STEP\s*\d+\s*:\s*(.+)", line, re.IGNORECASE)
         if m:
             steps.append(m.group(1).strip())
-    # Fallback: split on numbered lines if format wasn't followed
     if not steps:
         for line in text.splitlines():
             m = re.match(r"\d+[\.\)]\s+(.+)", line)

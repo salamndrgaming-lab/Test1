@@ -205,6 +205,7 @@
   <div>
     <h1>CEO Dashboard</h1>
     <div class="sub">Goal: $10,000 / month &nbsp;·&nbsp; Free stack &nbsp;·&nbsp; Agents run automatically</div>
+    <div id="platform-badges" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;"></div>
   </div>
   <div style="display:flex;align-items:center;gap:12px">
     <span style="font-size:.75rem;color:#718096"><span class="live-dot"></span>Live</span>
@@ -512,8 +513,18 @@ async function delAccount(id) {
   refreshAccounts();
 }
 
+// ── Platforms ──
+async function refreshPlatforms() {
+  const p = await fetch('/api/platforms').then(r=>r.json());
+  const el = document.getElementById('platform-badges');
+  const all = [...(p.available||[]), ...(p.selling||[])];
+  el.innerHTML = all.map(n =>
+    `<span style="background:#1f2937;border:1px solid #2d3748;border-radius:99px;padding:2px 10px;font-size:.68rem;color:#a0aec0">${esc(n)}</span>`
+  ).join('') + `<span style="background:#742a2a;border:1px solid #742a2a;border-radius:99px;padding:2px 10px;font-size:.68rem;color:#fc8181;font-weight:700">No new signups</span>`;
+}
+
 // Boot
-refreshStatus(); refreshInitiatives(); refreshTasks(); refreshAccounts();
+refreshStatus(); refreshInitiatives(); refreshTasks(); refreshAccounts(); refreshPlatforms();
 setInterval(refreshStatus,      8000);
 setInterval(refreshInitiatives, 10000);
 setInterval(refreshTasks,       5000);

@@ -196,6 +196,26 @@ def api_revenue():
     return jsonify({"ok": True})
 
 
+@app.route("/api/platforms")
+def api_platforms():
+    data = state.load()
+    return jsonify(data.get("ceo_platforms", {}))
+
+
+@app.route("/api/platforms", methods=["POST"])
+def api_platforms_update():
+    """CEO can add/remove platforms from the dashboard."""
+    body = request.json or {}
+    s = state.load()
+    s.setdefault("ceo_platforms", {})
+    if "available" in body:
+        s["ceo_platforms"]["available"] = body["available"]
+    if "selling" in body:
+        s["ceo_platforms"]["selling"] = body["selling"]
+    state.save(s)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/run-now", methods=["POST"])
 def api_run_now():
     """CEO-triggered: run the strategy cycle immediately."""

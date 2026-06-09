@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #0b0f17;
+  --surface: #141a26;
+  --surface-2: #1c2536;
+  --border: #283246;
+  --text: #e7ecf3;
+  --muted: #93a1b5;
+  --accent: #38bdf8;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--text);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* leave room for the fixed mobile bottom nav + iPhone home indicator */
+  padding-bottom: calc(4.5rem + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 768px) {
+  body {
+    padding-bottom: 0;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-[var(--border)] px-3 py-1 text-sm;
+  }
+  .chip-active {
+    @apply border-transparent bg-[var(--accent)] text-slate-900;
+  }
+}
+
+/* Leaflet container needs an explicit height */
+.leaflet-container {
+  height: 100%;
+  width: 100%;
+  border-radius: 1rem;
+  background: var(--surface-2);
+}
+
+/* Hide scrollbars on horizontal scroll strips while keeping scroll */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

@@ -1,5 +1,5 @@
-import type { Game } from "@/types";
-import { classNames } from "@/lib/format";
+import type { Game, MarketOdds } from "@/types";
+import { classNames, formatOdds } from "@/lib/format";
 
 function statusLabel(g: Game): string {
   if (g.status === "final") return "Final";
@@ -39,13 +39,23 @@ function Row({
   );
 }
 
-export function ScoreCard({ game }: { game: Game }) {
+export function ScoreCard({
+  game,
+  odds,
+}: {
+  game: Game;
+  odds?: MarketOdds;
+}) {
   const homeWins =
     game.status === "final" &&
     (game.homeScore ?? 0) > (game.awayScore ?? 0);
   const awayWins =
     game.status === "final" &&
     (game.awayScore ?? 0) > (game.homeScore ?? 0);
+
+  const hasOdds =
+    odds &&
+    (odds.spread != null || odds.total != null || odds.homeMoneyline != null);
 
   return (
     <div className="card card-hover">
@@ -77,6 +87,26 @@ export function ScoreCard({ game }: { game: Game }) {
       />
       {game.venue && (
         <p className="mt-1.5 text-[0.65rem] text-[var(--muted)]">{game.venue}</p>
+      )}
+      {hasOdds && (
+        <div className="mt-2 flex flex-wrap gap-1.5 border-t border-[var(--border-soft)] pt-2 text-[0.65rem] text-[var(--muted)]">
+          {odds!.spread != null && (
+            <span className="rounded bg-[var(--surface-2)] px-1.5 py-0.5">
+              {game.home.abbreviation}{" "}
+              {odds!.spread > 0 ? `+${odds!.spread}` : odds!.spread}
+            </span>
+          )}
+          {odds!.total != null && (
+            <span className="rounded bg-[var(--surface-2)] px-1.5 py-0.5">
+              O/U {odds!.total}
+            </span>
+          )}
+          {odds!.homeMoneyline != null && odds!.awayMoneyline != null && (
+            <span className="rounded bg-[var(--surface-2)] px-1.5 py-0.5">
+              ML {formatOdds(odds!.awayMoneyline)}/{formatOdds(odds!.homeMoneyline)}
+            </span>
+          )}
+        </div>
       )}
     </div>
   );

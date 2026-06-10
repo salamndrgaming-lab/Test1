@@ -12,9 +12,16 @@ const ESPN_PATH: Record<League, string> = {
   NCAAB: "basketball/mens-college-basketball",
 };
 
+interface EspnMoneyLine {
+  american?: string | number;
+  value?: number;
+}
 interface EspnTeamOdds {
   moneyLine?: number;
   favorite?: boolean;
+  current?: { moneyLine?: EspnMoneyLine };
+  close?: { moneyLine?: EspnMoneyLine };
+  open?: { moneyLine?: EspnMoneyLine };
 }
 
 interface EspnOdds {
@@ -24,6 +31,29 @@ interface EspnOdds {
   homeTeamOdds?: EspnTeamOdds;
   awayTeamOdds?: EspnTeamOdds;
   provider?: { name?: string };
+}
+
+/** Pull an American moneyline from the several shapes ESPN uses. */
+function extractMoneyline(t?: EspnTeamOdds): number | undefined {
+  if (!t) return undefined;
+  if (typeof t.moneyLine === "number") return t.moneyLine;
+  const am =
+    t.current?.moneyLine?.american ??
+    t.close?.moneyLine?.american ??
+    t.open?.moneyLine?.american;
+  if (am != null) {
+    const n = typeof am === "string" ? parseInt(am.replace("+", ""), 10) : am;
+    if (!Number.isNaN(n)) return n;
+  }
+  return undefined;
+}
+
+/** Parse "NYY -1.5" -> { abbr: "NYY", line: -1.5 }. */
+function parseDetails(details?: string): { abbr?: string; line?: number } {
+  if (!details) return {};
+  const m = details.match(/([A-Z]{2,4})\s*([+-]?\d+(?:\.\d+)?)/);
+  if (m) return { abbr: m[1], line: parseFloat(m[2]) };
+  return {};
 }
 
 interface EspnCompetitor {
@@ -116,13 +146,39 @@ export async function fetchEspn(
 
       const o = comp?.odds?.[0];
       if (o) {
+        const homeMl = extractMoneyline(o.homeTeamOdds);
+        const awayMl = extractMoneyline(o.awayTeamOdds);
+        const homeAbbr = game.home.abbreviation;
+        const awayAbbr = game.away.abbreviation;
+
+        // favorite: prefer explicit flag, then details, then moneylines
+        let favorite: "home" | "away" | undefined;
+        if (o.homeTeamOdds?.favorite) favorite = "home";
+        else if (o.awayTeamOdds?.favorite) favorite = "away";
+        const det = parseDetails(o.details);
+        if (!favorite && det.abbr) {
+          if (det.abbr === homeAbbr) favorite = "home";
+          else if (det.abbr === awayAbbr) favorite = "away";
+        }
+        if (!favorite && homeMl != null && awayMl != null)
+          favorite = homeMl <= awayMl ? "home" : "away";
+
+        // home spread (negative if home favored), derived unambiguously
+        let homeSpread = o.spread;
+        if (det.abbr && det.line != null) {
+          const lineAbs = Math.abs(det.line);
+          homeSpread = det.abbr === homeAbbr ? -lineAbs : lineAbs;
+        }
+
         odds.push({
           gameId: ev.id,
           book: o.provider?.name ?? "ESPN BET",
-          homeMoneyline: o.homeTeamOdds?.moneyLine,
-          awayMoneyline: o.awayTeamOdds?.moneyLine,
-          spread: o.spread,
+          homeMoneyline: homeMl,
+          awayMoneyline: awayMl,
+          spread: homeSpread,
           total: o.overUnder,
+          favorite,
+          details: o.details,
         });
       }
     }

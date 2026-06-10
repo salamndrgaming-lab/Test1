@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Game, MarketOdds, SgpRecommendation } from "@/types";
+import type { Game, League, MarketOdds, SgpRecommendation } from "@/types";
 import { useProvider } from "@/lib/useProvider";
 import { PageHeader, SourceBadge, Spinner, Card, ErrorState } from "@/components/ui";
 import { DisclaimerBanner } from "@/components/layout/DisclaimerBanner";
@@ -13,11 +13,22 @@ import { classNames } from "@/lib/format";
 import { accentVars } from "@/lib/sections";
 
 type Tab = "scores" | "odds" | "sgp";
+const LEAGUES: (League | "All")[] = [
+  "All",
+  "NBA",
+  "MLB",
+  "NHL",
+  "NFL",
+  "NCAAF",
+  "NCAAB",
+];
 
 export default function SportsPage() {
   const [tab, setTab] = useState<Tab>("scores");
-  const games = useProvider<Game[]>("/api/sports");
-  const odds = useProvider<MarketOdds[]>("/api/odds");
+  const [league, setLeague] = useState<League | "All">("All");
+  const q = league === "All" ? "" : `?league=${league}`;
+  const games = useProvider<Game[]>(`/api/sports${q}`);
+  const odds = useProvider<MarketOdds[]>(`/api/odds${q}`);
   const sgp = useProvider<SgpRecommendation>("/api/sgp");
 
   const source = games.result;
@@ -48,6 +59,23 @@ export default function SportsPage() {
         ))}
       </div>
 
+      {tab !== "sgp" && (
+        <div className="no-scrollbar -mx-4 mb-4 flex gap-2 overflow-x-auto px-4">
+          {LEAGUES.map((l) => (
+            <button
+              key={l}
+              onClick={() => setLeague(l)}
+              className={classNames(
+                "chip text-xs",
+                league === l && "chip-active",
+              )}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+      )}
+
       {tab === "scores" && (
         <>
           {games.loading ? (
@@ -62,9 +90,13 @@ export default function SportsPage() {
               No games scheduled right now.
             </p>
           ) : (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="animate-in grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {(games.data ?? []).map((g) => (
-                <ScoreCard key={g.id} game={g} />
+                <ScoreCard
+                  key={g.id}
+                  game={g}
+                  odds={(odds.data ?? []).find((o) => o.gameId === g.id)}
+                />
               ))}
             </div>
           )}

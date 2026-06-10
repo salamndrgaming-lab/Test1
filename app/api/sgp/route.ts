@@ -18,9 +18,9 @@ export async function GET() {
       controller.signal,
     );
     const legs = legsFromGames(games, odds, gameLinks);
-    if (legs.length < 2) {
+    if (legs.length === 0) {
       throw new Error(
-        "Not enough upcoming games with live odds right now to build a slip.",
+        "No upcoming games with live odds are posted right now — check back closer to game time.",
       );
     }
     const recommendation = buildRecommendation(legs, 6);

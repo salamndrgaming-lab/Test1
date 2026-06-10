@@ -126,60 +126,115 @@ export function legsFromGames(
   for (const g of games) {
     if (g.status === "final") continue; // only recent/upcoming
     const o = oddsByGame.get(g.id);
-    if (!o || o.homeMoneyline === undefined || o.awayMoneyline === undefined)
-      continue;
+    if (!o) continue;
 
-    const favIsHome = o.homeMoneyline <= o.awayMoneyline;
+    const matchup = `${g.away.abbreviation} @ ${g.home.abbreviation}`;
+    const ref = gameLinks[g.id]
+      ? { label: "ESPN — Game preview & odds", url: gameLinks[g.id] }
+      : { label: "ESPN — Scoreboard", url: "https://www.espn.com/" };
+
+    // determine favorite side from available signals
+    const favIsHome =
+      o.favorite === "home"
+        ? true
+        : o.favorite === "away"
+          ? false
+          : o.homeMoneyline != null && o.awayMoneyline != null
+            ? o.homeMoneyline <= o.awayMoneyline
+            : (o.spread ?? 0) <= 0;
     const favTeam = favIsHome ? g.home : g.away;
     const dogTeam = favIsHome ? g.away : g.home;
-    const favOdds = favIsHome ? o.homeMoneyline : o.awayMoneyline;
 
-    const implied = impliedProbability(americanToDecimal(favOdds));
     const favWp = winPct(favTeam.record);
     const dogWp = winPct(dogTeam.record);
     const hasRecords = favWp !== null && dogWp !== null;
-    const relStrength = hasRecords
-      ? favWp! / (favWp! + dogWp!) + (favIsHome ? 0.03 : 0)
-      : implied;
-    const modelProbability = Math.max(
-      0.05,
-      Math.min(0.97, 0.55 * implied + 0.45 * relStrengthClamp(relStrength)),
-    );
+    const recordLine = hasRecords
+      ? ` Season records: ${favTeam.record} vs ${dogTeam.record}.`
+      : "";
 
-    legs.push({
-      id: `${g.id}-ml`,
-      gameId: g.id,
-      league: g.league,
-      matchup: `${g.away.abbreviation} @ ${g.home.abbreviation}`,
-      market: "Moneyline",
-      selection: `${favTeam.name} ML`,
-      americanOdds: favOdds,
-      modelProbability: Number(modelProbability.toFixed(3)),
-      confidence: confidenceFor(modelProbability, hasRecords),
-      rationale:
-        `${favTeam.name} are the market favorite at ${formatOdds(favOdds)} ` +
-        `${favIsHome ? "at home" : "on the road"} against ${dogTeam.name}` +
-        (hasRecords
-          ? `. Season records: ${favTeam.record} vs ${dogTeam.record}.`
-          : `. Pick reflects the current betting market.`),
-      supportingStats: [
-        { label: "Moneyline", value: formatOdds(favOdds) },
-        { label: "Implied win%", value: `${(implied * 100).toFixed(1)}%` },
-        { label: `${favTeam.abbreviation} record`, value: favTeam.record ?? "N/A" },
-        { label: `${dogTeam.abbreviation} record`, value: dogTeam.record ?? "N/A" },
-        ...(o.total !== undefined
-          ? [{ label: "Game total", value: String(o.total) }]
-          : []),
-      ],
-      references: [
-        gameLinks[g.id]
-          ? { label: "ESPN — Game preview & odds", url: gameLinks[g.id] }
-          : {
-              label: "ESPN — Scoreboard",
-              url: "https://www.espn.com/",
-            },
-      ],
-    });
+    // ---- Moneyline leg (favorite) ----
+    const favMl = favIsHome ? o.homeMoneyline : o.awayMoneyline;
+    if (favMl != null) {
+      const implied = impliedProbability(americanToDecimal(favMl));
+      const relStrength = hasRecords
+        ? favWp! / (favWp! + dogWp!) + (favIsHome ? 0.03 : 0)
+        : implied;
+      const modelProbability = Math.max(
+        0.05,
+        Math.min(0.97, 0.55 * implied + 0.45 * relStrengthClamp(relStrength)),
+      );
+      legs.push({
+        id: `${g.id}-ml`,
+        gameId: g.id,
+        league: g.league,
+        matchup,
+        market: "Moneyline",
+        selection: `${favTeam.name} ML`,
+        americanOdds: favMl,
+        modelProbability: Number(modelProbability.toFixed(3)),
+        confidence: confidenceFor(modelProbability, hasRecords),
+        rationale:
+          `${favTeam.name} are the market favorite at ${formatOdds(favMl)} ` +
+          `${favIsHome ? "at home" : "on the road"} vs ${dogTeam.name}.` +
+          recordLine,
+        supportingStats: [
+          { label: "Moneyline", value: formatOdds(favMl) },
+          { label: "Implied win%", value: `${(implied * 100).toFixed(1)}%` },
+          { label: `${favTeam.abbreviation} rec`, value: favTeam.record ?? "N/A" },
+          { label: `${dogTeam.abbreviation} rec`, value: dogTeam.record ?? "N/A" },
+        ],
+        references: [ref],
+      });
+    }
+
+    // ---- Spread leg (favorite, standard -110) ----
+    if (o.spread != null && Number.isFinite(o.spread)) {
+      const favSpread = favIsHome ? o.spread : -o.spread;
+      const spreadStr = `${favSpread > 0 ? "+" : ""}${favSpread}`;
+      const implied = impliedProbability(americanToDecimal(-110));
+      legs.push({
+        id: `${g.id}-spread`,
+        gameId: g.id,
+        league: g.league,
+        matchup,
+        market: "Spread",
+        selection: `${favTeam.name} ${spreadStr}`,
+        americanOdds: -110,
+        modelProbability: Number(
+          Math.min(0.62, 0.5 + (hasRecords ? (favWp! - dogWp!) * 0.2 : 0)).toFixed(
+            3,
+          ),
+        ),
+        confidence: hasRecords ? "medium" : "low",
+        rationale:
+          `Market spread has ${favTeam.name} at ${spreadStr} vs ${dogTeam.name}.` +
+          recordLine,
+        supportingStats: [
+          { label: "Spread", value: `${favTeam.abbreviation} ${spreadStr}` },
+          { label: "Implied", value: `${(implied * 100).toFixed(1)}%` },
+        ],
+        references: [ref],
+      });
+    }
+
+    // ---- Total leg (Over, standard -110) ----
+    if (o.total != null && Number.isFinite(o.total)) {
+      const implied = impliedProbability(americanToDecimal(-110));
+      legs.push({
+        id: `${g.id}-total`,
+        gameId: g.id,
+        league: g.league,
+        matchup,
+        market: "Total",
+        selection: `Over ${o.total}`,
+        americanOdds: -110,
+        modelProbability: Number(implied.toFixed(3)), // neutral: posted line
+        confidence: "low",
+        rationale: `Posted game total is ${o.total}. Shown as a research option; no directional model is applied to the total.`,
+        supportingStats: [{ label: "Total", value: String(o.total) }],
+        references: [ref],
+      });
+    }
   }
 
   return legs;

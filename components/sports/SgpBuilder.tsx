@@ -5,6 +5,7 @@ import type { SgpRecommendation } from "@/types";
 import { PickCard } from "./PickCard";
 import { DisclaimerBanner } from "@/components/layout/DisclaimerBanner";
 import { calculatePayout } from "@/lib/sgp";
+import { LegEdgeChart, ParlayGrowthChart } from "./SgpCharts";
 import { formatMoney, formatOdds, formatPct } from "@/lib/format";
 
 // Interactive research slip: toggle legs, set a stake, see combined odds and an
@@ -107,6 +108,28 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
           No outcome is guaranteed.
         </p>
       </div>
+
+      {selectedLegs.length > 0 && (
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="card">
+            <h3 className="font-semibold">Model vs Market</h3>
+            <p className="mb-3 text-xs text-[var(--muted)]">
+              Each leg&apos;s heuristic model probability (accent) vs the
+              odds-implied probability (grey). Accent bars longer than grey =
+              positive edge.
+            </p>
+            <LegEdgeChart legs={selectedLegs} />
+          </div>
+          <div className="card">
+            <h3 className="font-semibold">Payout Growth</h3>
+            <p className="mb-3 text-xs text-[var(--muted)]">
+              How a {formatMoney(stake)} stake&apos;s estimated return compounds
+              as each leg is added.
+            </p>
+            <ParlayGrowthChart legs={selectedLegs} stake={stake} />
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-3">
         {rec.legs.map((leg) => (

@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import type { WeatherReport, ProviderResult } from "@/types";
 import { PageHeader, SourceBadge, Spinner, Card, ErrorState } from "@/components/ui";
 import { ForecastStrip } from "@/components/weather/ForecastStrip";
+import { HourlyChart } from "@/components/weather/HourlyChart";
+import { WeatherDetails } from "@/components/weather/WeatherDetails";
 import { accentVars } from "@/lib/sections";
 
 export default function WeatherPage() {
@@ -85,20 +87,31 @@ export default function WeatherPage() {
           onRetry={() => setUrl((u) => `${u}${u.includes("?") ? "&" : "?"}r=${Date.now()}`)}
         />
       ) : (
-        <div className="space-y-4">
-          <Card className="bg-gradient-to-br from-sky-500/15 to-transparent">
+        <div className="animate-in space-y-4">
+          <Card className="bg-gradient-to-br from-cyan-500/15 to-transparent">
             <p className="text-sm text-[var(--muted)]">{w.current.place}</p>
-            <div className="flex items-end gap-4">
-              <span className="text-5xl font-bold tabular-nums">
+            <div className="flex flex-wrap items-end gap-4">
+              <span className="text-6xl font-bold leading-none tabular-nums">
                 {w.current.tempF}°
               </span>
               <div className="pb-1 text-sm">
-                <p className="font-medium">{w.current.condition}</p>
+                <p className="text-base font-medium">{w.current.condition}</p>
                 <p className="text-[var(--muted)]">
-                  Humidity {w.current.humidity}% · Wind {w.current.windMph} mph
+                  Feels like {w.current.feelsLikeF}° · H {w.daily[0]?.highF}° / L{" "}
+                  {w.daily[0]?.lowF}°
                 </p>
               </div>
             </div>
+          </Card>
+
+          <WeatherDetails current={w.current} today={w.daily[0]} />
+
+          <Card>
+            <h3 className="mb-1 font-semibold">Next 24 Hours</h3>
+            <p className="mb-3 text-xs text-[var(--muted)]">
+              Temperature with hourly precipitation chance.
+            </p>
+            <HourlyChart hourly={w.hourly} />
           </Card>
 
           <Card>

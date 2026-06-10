@@ -78,6 +78,8 @@ export interface MarketOdds {
   total?: number; // over/under line
   overOdds?: number;
   underOdds?: number;
+  favorite?: "home" | "away";
+  details?: string; // raw "NYY -1.5"
 }
 
 // ---------- SGP research tool ----------
@@ -119,9 +121,14 @@ export interface SgpRecommendation {
 export interface WeatherCurrent {
   place: string;
   tempF: number;
+  feelsLikeF: number;
   condition: string;
   humidity: number;
   windMph: number;
+  windDir?: number; // degrees
+  pressureHpa?: number;
+  uvIndex?: number;
+  isDay?: boolean;
   icon?: string;
 }
 
@@ -132,11 +139,22 @@ export interface WeatherForecastDay {
   lowF: number;
   condition: string;
   precipChance: number; // 0..100
+  sunrise?: string;
+  sunset?: string;
+  uvMax?: number;
+}
+
+export interface WeatherHour {
+  time: string; // ISO
+  label: string; // "3 PM"
+  tempF: number;
+  precipChance: number;
 }
 
 export interface WeatherReport {
   current: WeatherCurrent;
   daily: WeatherForecastDay[];
+  hourly: WeatherHour[];
 }
 
 // ---------- Entertainment ----------

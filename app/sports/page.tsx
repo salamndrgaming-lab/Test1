@@ -1,18 +1,26 @@
 "use client";
 
-import { useState } from "react";
-import type { Game, League, MarketOdds, SgpRecommendation } from "@/types";
+import { useMemo, useState } from "react";
+import type {
+  Game,
+  League,
+  MarketOdds,
+  SgpRecommendation,
+  Standing,
+} from "@/types";
 import { useProvider } from "@/lib/useProvider";
+import { usePersistentState } from "@/lib/usePersistentState";
 import { PageHeader, SourceBadge, Spinner, Card, ErrorState } from "@/components/ui";
 import { DisclaimerBanner } from "@/components/layout/DisclaimerBanner";
 import { ScoreCard } from "@/components/sports/ScoreCard";
 import { OddsTable } from "@/components/sports/OddsTable";
 import { OddsBarChart } from "@/components/charts/OddsBarChart";
 import { SgpBuilder } from "@/components/sports/SgpBuilder";
+import { StandingsTable } from "@/components/sports/StandingsTable";
 import { classNames } from "@/lib/format";
 import { accentVars } from "@/lib/sections";
 
-type Tab = "scores" | "odds" | "sgp";
+type Tab = "scores" | "odds" | "standings" | "sgp";
 const LEAGUES: (League | "All")[] = [
   "All",
   "NBA",
@@ -26,10 +34,35 @@ const LEAGUES: (League | "All")[] = [
 export default function SportsPage() {
   const [tab, setTab] = useState<Tab>("scores");
   const [league, setLeague] = useState<League | "All">("All");
+  const [favsOnly, setFavsOnly] = useState(false);
+  const [favTeams, setFavTeams] = usePersistentState<string[]>(
+    "newsscope.favTeams",
+    [],
+  );
   const q = league === "All" ? "" : `?league=${league}`;
   const games = useProvider<Game[]>(`/api/sports${q}`);
   const odds = useProvider<MarketOdds[]>(`/api/odds${q}`);
   const sgp = useProvider<SgpRecommendation>("/api/sgp");
+  // standings needs a concrete league; default to NBA when "All"
+  const standingsLeague = league === "All" ? "NBA" : league;
+  const standings = useProvider<Standing[]>(
+    `/api/sports/standings?league=${standingsLeague}`,
+  );
+
+  const toggleFav = (abbr: string) =>
+    setFavTeams((prev) =>
+      prev.includes(abbr) ? prev.filter((a) => a !== abbr) : [...prev, abbr],
+    );
+
+  const visibleGames = useMemo(() => {
+    const list = games.data ?? [];
+    if (!favsOnly) return list;
+    return list.filter(
+      (g) =>
+        favTeams.includes(g.home.abbreviation) ||
+        favTeams.includes(g.away.abbreviation),
+    );
+  }, [games.data, favsOnly, favTeams]);
 
   const source = games.result;
 
@@ -44,13 +77,13 @@ export default function SportsPage() {
 
       <DisclaimerBanner />
 
-      <div className="my-4 flex gap-2">
-        {(["scores", "odds", "sgp"] as Tab[]).map((t) => (
+      <div className="no-scrollbar -mx-4 my-4 flex gap-2 overflow-x-auto px-4">
+        {(["scores", "odds", "standings", "sgp"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={classNames(
-              "chip capitalize",
+              "chip whitespace-nowrap capitalize",
               tab === t && "chip-active",
             )}
           >
@@ -73,6 +106,17 @@ export default function SportsPage() {
               {l}
             </button>
           ))}
+          {tab === "scores" && (
+            <button
+              onClick={() => setFavsOnly((v) => !v)}
+              className={classNames(
+                "chip ml-auto whitespace-nowrap text-xs",
+                favsOnly && "chip-active",
+              )}
+            >
+              ★ Favorites
+            </button>
+          )}
         </div>
       )}
 
@@ -85,23 +129,45 @@ export default function SportsPage() {
               message={`Couldn't load live scores. ${games.error}`}
               onRetry={games.refetch}
             />
-          ) : (games.data ?? []).length === 0 ? (
+          ) : visibleGames.length === 0 ? (
             <p className="py-8 text-center text-sm text-[var(--muted)]">
-              No games scheduled right now.
+              {favsOnly
+                ? "No games for your favorite teams right now."
+                : "No games scheduled right now."}
             </p>
           ) : (
             <div className="animate-in grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {(games.data ?? []).map((g) => (
+              {visibleGames.map((g) => (
                 <ScoreCard
                   key={g.id}
                   game={g}
                   odds={(odds.data ?? []).find((o) => o.gameId === g.id)}
+                  favorites={favTeams}
+                  onToggleFavorite={toggleFav}
                 />
               ))}
             </div>
           )}
         </>
       )}
+
+      {tab === "standings" &&
+        (standings.loading ? (
+          <Spinner label="Loading standings…" />
+        ) : standings.error || !standings.data ? (
+          <ErrorState
+            message={`Couldn't load standings. ${standings.error ?? ""}`}
+            onRetry={standings.refetch}
+          />
+        ) : (
+          <div className="animate-in">
+            <p className="mb-3 text-xs text-[var(--muted)]">
+              {standingsLeague}
+              {league === "All" && " (pick a league above)"}
+            </p>
+            <StandingsTable standings={standings.data} />
+          </div>
+        ))}
 
       {tab === "odds" &&
         (odds.loading ? (

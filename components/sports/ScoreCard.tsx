@@ -13,18 +13,36 @@ function statusLabel(g: Game): string {
 
 function Row({
   name,
+  abbr,
   record,
   score,
   winner,
+  isFav,
+  onToggleFav,
 }: {
   name: string;
+  abbr: string;
   record?: string;
   score?: number;
   winner: boolean;
+  isFav?: boolean;
+  onToggleFav?: (abbr: string) => void;
 }) {
   return (
     <div className="flex items-center justify-between py-0.5">
       <div className="flex items-baseline gap-2">
+        {onToggleFav && (
+          <button
+            onClick={() => onToggleFav(abbr)}
+            aria-label={isFav ? "Unfavorite" : "Favorite"}
+            className={classNames(
+              "self-center text-sm leading-none transition-colors",
+              isFav ? "text-amber-400" : "text-[var(--muted-2)] hover:text-amber-400",
+            )}
+          >
+            {isFav ? "★" : "☆"}
+          </button>
+        )}
         <span className={classNames("font-medium", winner && "text-[var(--accent)]")}>
           {name}
         </span>
@@ -42,9 +60,13 @@ function Row({
 export function ScoreCard({
   game,
   odds,
+  favorites,
+  onToggleFavorite,
 }: {
   game: Game;
   odds?: MarketOdds;
+  favorites?: string[];
+  onToggleFavorite?: (abbr: string) => void;
 }) {
   const homeWins =
     game.status === "final" &&
@@ -75,15 +97,21 @@ export function ScoreCard({
       </div>
       <Row
         name={game.away.name}
+        abbr={game.away.abbreviation}
         record={game.away.record}
         score={game.awayScore}
         winner={awayWins}
+        isFav={favorites?.includes(game.away.abbreviation)}
+        onToggleFav={onToggleFavorite}
       />
       <Row
         name={game.home.name}
+        abbr={game.home.abbreviation}
         record={game.home.record}
         score={game.homeScore}
         winner={homeWins}
+        isFav={favorites?.includes(game.home.abbreviation)}
+        onToggleFav={onToggleFavorite}
       />
       {game.venue && (
         <p className="mt-1.5 text-[0.65rem] text-[var(--muted)]">{game.venue}</p>

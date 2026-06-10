@@ -27,6 +27,7 @@ const TABS: Tab[] = [
   { href: "/good-news", label: "Good", icon: "good" },
   { href: "/sports", label: "Sports", icon: "sports" },
   { href: "/weather", label: "Weather", icon: "weather" },
+  { href: "/markets", label: "Markets", icon: "markets" },
   { href: "/bias", label: "Bias", icon: "bias" },
   { href: "/entertainment", label: "Ent.", icon: "ent" },
   { href: "/settings", label: "Settings", icon: "settings" },

@@ -82,6 +82,16 @@ export interface MarketOdds {
   details?: string; // raw "NYY -1.5"
 }
 
+export interface Standing {
+  group: string; // division / conference name
+  team: string;
+  abbreviation: string;
+  wins: number;
+  losses: number;
+  pct: string; // win %
+  gamesBehind?: string;
+}
+
 // ---------- SGP research tool ----------
 
 export interface SgpReference {
@@ -157,6 +167,26 @@ export interface WeatherReport {
   hourly: WeatherHour[];
 }
 
+export interface WeatherAlert {
+  id: string;
+  event: string; // "Severe Thunderstorm Warning"
+  severity: string; // Extreme | Severe | Moderate | Minor | Unknown
+  headline: string;
+  area: string;
+  expires?: string;
+}
+
+export interface AirQuality {
+  usAqi: number;
+  category: string; // Good | Moderate | Unhealthy ...
+  pm25?: number;
+  pm10?: number;
+  ozone?: number;
+  no2?: number;
+  so2?: number;
+  co?: number;
+}
+
 // ---------- Entertainment ----------
 
 export interface EntertainmentItem {
@@ -168,6 +198,22 @@ export interface EntertainmentItem {
   releaseDate?: string;
   imageUrl?: string;
   url?: string;
+}
+
+// ---------- Markets ----------
+
+export interface Quote {
+  symbol: string;
+  name: string;
+  price: number;
+  changePct: number; // day / 24h percent change
+  spark?: number[]; // recent price series for a sparkline
+  currency?: string;
+}
+
+export interface MarketsData {
+  indices: Quote[];
+  crypto: Quote[];
 }
 
 // ---------- Provider envelope ----------

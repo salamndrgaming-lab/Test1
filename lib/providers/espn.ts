@@ -3,7 +3,7 @@ import { fetchJson } from "./withFallback";
 
 // ESPN unofficial scoreboard endpoints (keyless). The same response carries
 // scores AND betting odds, so we parse both in one call.
-const ESPN_PATH: Record<League, string> = {
+export const ESPN_PATH: Record<League, string> = {
   NFL: "football/nfl",
   NBA: "basketball/nba",
   MLB: "baseball/mlb",

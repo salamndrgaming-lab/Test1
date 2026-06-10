@@ -9,6 +9,7 @@ export const SECTION_ACCENTS = {
   weather: ["#22d3ee", "#38bdf8"],
   bias: ["#a78bfa", "#818cf8"],
   ent: ["#ec4899", "#d946ef"],
+  markets: ["#34d399", "#10b981"],
 } as const;
 
 export type SectionName = keyof typeof SECTION_ACCENTS;

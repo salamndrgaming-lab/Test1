@@ -1,8 +1,12 @@
 import { XMLParser } from "fast-xml-parser";
 
+// processEntities:false avoids fast-xml-parser's entity-expansion safety limit
+// (Google News feeds pack thousands of HTML entities into item descriptions,
+// which trips the default 1000-entity cap). We decode entities ourselves below.
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "@_",
+  processEntities: false,
 });
 
 export interface RssItem {
@@ -14,10 +18,34 @@ export interface RssItem {
   sourceUrl?: string;
 }
 
+const NAMED: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
+
+function decodeEntities(s: string): string {
+  return s.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m, code: string) => {
+    if (code[0] === "#") {
+      const num =
+        code[1] === "x" || code[1] === "X"
+          ? parseInt(code.slice(2), 16)
+          : parseInt(code.slice(1), 10);
+      return Number.isFinite(num) ? String.fromCodePoint(num) : m;
+    }
+    const k = code.toLowerCase();
+    return k in NAMED ? NAMED[k] : m;
+  });
+}
+
 function stripHtml(s: string): string {
-  return s
-    .replace(/<[^>]*>/g, " ")
-    .replace(/&[a-z]+;/gi, " ")
+  // decode entities first so encoded tags (&lt;a&gt;) become real tags, strip
+  // them, then decode any remaining entities and collapse whitespace.
+  const decoded = decodeEntities(s);
+  return decodeEntities(decoded.replace(/<[^>]*>/g, " "))
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -40,7 +68,9 @@ export function parseRss(xml: string): RssItem[] {
             ? (it.link[0] as Record<string, string>)?.["@_href"]
             : "") ??
           "");
-    const source = it.source as { "#text"?: string; "@_url"?: string } | undefined;
+    const source = it.source as
+      | { "#text"?: string; "@_url"?: string }
+      | undefined;
     return {
       title: stripHtml(String(it.title ?? "")),
       link: String(link ?? ""),
@@ -48,7 +78,7 @@ export function parseRss(xml: string): RssItem[] {
         String(it.description ?? it.summary ?? it.content ?? ""),
       ),
       pubDate: String(it.pubDate ?? it.published ?? it.updated ?? ""),
-      source: source?.["#text"],
+      source: source?.["#text"] ? decodeEntities(source["#text"]) : undefined,
       sourceUrl: source?.["@_url"],
     };
   });

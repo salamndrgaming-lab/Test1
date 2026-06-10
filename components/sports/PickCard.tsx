@@ -22,7 +22,7 @@ export function PickCard({
     <div
       className={classNames(
         "card transition-colors",
-        selected ? "border-[var(--accent)]/60" : "opacity-70",
+        selected ? "border-sky-400/60" : "opacity-70",
       )}
     >
       <div className="flex items-start justify-between gap-3">

@@ -3,13 +3,23 @@
 @tailwind utilities;
 
 :root {
-  --background: #0b0f17;
-  --surface: #141a26;
-  --surface-2: #1c2536;
-  --border: #283246;
-  --text: #e7ecf3;
-  --muted: #93a1b5;
+  --bg: #0a0d13;
+  --bg-2: #0d1119;
+  --surface: #141925;
+  --surface-2: #1b2230;
+  --surface-3: #232c3d;
+  --border: #283143;
+  --border-soft: #1f2735;
+  --text: #eef2f8;
+  --muted: #93a0b4;
+  --muted-2: #6b7688;
   --accent: #38bdf8;
+  --accent-2: #818cf8;
+  --good: #22c55e;
+  --bad: #ef4444;
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "SF Pro Text", "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
 }
 
 html {
@@ -17,12 +27,26 @@ html {
 }
 
 body {
-  background: var(--background);
   color: var(--text);
-  font-family: var(--font-sans), system-ui, sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
-  /* leave room for the fixed mobile bottom nav + iPhone home indicator */
-  padding-bottom: calc(4.5rem + env(safe-area-inset-bottom));
+  text-rendering: optimizeLegibility;
+  /* layered ambient glows over a deep base */
+  background:
+    radial-gradient(
+      120% 80% at 50% -10%,
+      rgba(56, 189, 248, 0.1),
+      transparent 60%
+    ),
+    radial-gradient(
+      90% 60% at 100% 0%,
+      rgba(129, 140, 248, 0.08),
+      transparent 55%
+    ),
+    var(--bg);
+  background-attachment: fixed;
+  /* room for the fixed mobile bottom nav + iPhone home indicator */
+  padding-bottom: calc(4.75rem + env(safe-area-inset-bottom));
 }
 
 @media (min-width: 768px) {
@@ -33,14 +57,86 @@ body {
 
 @layer components {
   .card {
-    @apply rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4;
+    @apply rounded-2xl border border-[var(--border-soft)] bg-[var(--surface)] p-4;
+    box-shadow:
+      0 1px 0 0 rgba(255, 255, 255, 0.03) inset,
+      0 8px 24px -12px rgba(0, 0, 0, 0.6);
   }
+  .card-hover {
+    @apply transition-all duration-200;
+  }
+  .card-hover:hover {
+    @apply -translate-y-0.5 border-[var(--border)];
+    box-shadow:
+      0 1px 0 0 rgba(255, 255, 255, 0.05) inset,
+      0 16px 32px -16px rgba(0, 0, 0, 0.7);
+  }
+
   .chip {
-    @apply inline-flex items-center gap-1 rounded-full border border-[var(--border)] px-3 py-1 text-sm;
+    @apply inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-sm transition-colors;
+    border-color: var(--border);
+    background: var(--surface);
+    color: var(--muted);
   }
-  .chip-active {
-    @apply border-transparent bg-[var(--accent)] text-slate-900;
+  .chip:hover {
+    border-color: rgba(56, 189, 248, 0.4);
+    color: var(--text);
   }
+  .chip-active,
+  .chip-active:hover {
+    border-color: transparent;
+    color: #020617;
+    font-weight: 600;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  }
+
+  .btn-primary {
+    @apply rounded-xl px-4 py-2 text-sm font-semibold text-slate-950 transition-transform active:scale-95;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  }
+
+  .gradient-text {
+    background: linear-gradient(120deg, var(--text) 10%, var(--accent) 120%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .skeleton {
+    @apply rounded-lg;
+    background: linear-gradient(
+      90deg,
+      var(--surface) 25%,
+      var(--surface-2) 37%,
+      var(--surface) 63%
+    );
+    background-size: 400% 100%;
+    animation: shimmer 1.4s ease infinite;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: 0 0;
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-in {
+  animation: fadeInUp 0.35s ease both;
 }
 
 /* Leaflet container needs an explicit height */
@@ -51,11 +147,26 @@ body {
   background: var(--surface-2);
 }
 
-/* Hide scrollbars on horizontal scroll strips while keeping scroll */
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* refined scrollbars on desktop */
+@media (min-width: 768px) {
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--surface-3);
+    border-radius: 999px;
+    border: 2px solid var(--bg);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--border);
+  }
 }

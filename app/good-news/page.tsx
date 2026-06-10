@@ -3,7 +3,12 @@
 import type { Article } from "@/types";
 import { useProvider } from "@/lib/useProvider";
 import { ArticleCard } from "@/components/news/ArticleCard";
-import { PageHeader, SourceBadge, Spinner, ErrorState } from "@/components/ui";
+import {
+  PageHeader,
+  SourceBadge,
+  SkeletonCards,
+  ErrorState,
+} from "@/components/ui";
 import { SentimentGauge } from "@/components/charts/SentimentGauge";
 
 export default function GoodNewsPage() {
@@ -37,7 +42,7 @@ export default function GoodNewsPage() {
         </div>
       </div>
 
-      {loading && <Spinner label="Finding the bright side…" />}
+      {loading && <SkeletonCards count={4} />}
       {!loading && error && (
         <ErrorState
           message={`Couldn't load live news. ${error}`}
@@ -49,11 +54,13 @@ export default function GoodNewsPage() {
           No positive stories right now — check back soon.
         </p>
       )}
-      <div className="grid gap-3 sm:grid-cols-2">
-        {articles.map((a) => (
-          <ArticleCard key={a.id} article={a} />
-        ))}
-      </div>
+      {!loading && !error && articles.length > 0 && (
+        <div className="animate-in grid gap-3 sm:grid-cols-2">
+          {articles.map((a) => (
+            <ArticleCard key={a.id} article={a} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -6,18 +6,43 @@ import { classNames } from "@/lib/format";
 export function Card({
   children,
   className,
+  hover = false,
 }: {
   children: ReactNode;
   className?: string;
+  hover?: boolean;
 }) {
-  return <div className={classNames("card", className)}>{children}</div>;
+  return (
+    <div className={classNames("card", hover && "card-hover", className)}>
+      {children}
+    </div>
+  );
 }
 
 export function Spinner({ label = "Loading…" }: { label?: string }) {
   return (
     <div className="flex items-center gap-2 py-8 text-sm text-[var(--muted)]">
-      <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--muted)] border-t-transparent" />
+      <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--accent)] border-t-transparent" />
       {label}
+    </div>
+  );
+}
+
+/** Shimmering placeholder used while live data loads. */
+export function SkeletonCards({ count = 6 }: { count?: number }) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className="card space-y-3">
+          <div className="flex gap-2">
+            <div className="skeleton h-4 w-16" />
+            <div className="skeleton h-4 w-20" />
+          </div>
+          <div className="skeleton h-4 w-11/12" />
+          <div className="skeleton h-4 w-3/4" />
+          <div className="skeleton h-3 w-1/3" />
+        </div>
+      ))}
     </div>
   );
 }
@@ -63,10 +88,7 @@ export function ErrorState({
         {message ?? "Couldn't load live data right now."}
       </p>
       {onRetry && (
-        <button
-          onClick={onRetry}
-          className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-slate-900"
-        >
+        <button onClick={onRetry} className="btn-primary">
           Retry
         </button>
       )}
@@ -106,14 +128,18 @@ export function PageHeader({
   right?: ReactNode;
 }) {
   return (
-    <header className="mb-4 flex items-start justify-between gap-3">
+    <header className="mb-5 flex items-start justify-between gap-3">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
+        <h1 className="gradient-text text-[1.75rem] font-extrabold leading-tight tracking-tight">
+          {title}
+        </h1>
         {subtitle && (
-          <p className="mt-1 text-sm text-[var(--muted)]">{subtitle}</p>
+          <p className="mt-1 max-w-prose text-sm text-[var(--muted)]">
+            {subtitle}
+          </p>
         )}
       </div>
-      {right}
+      {right && <div className="shrink-0 pt-1">{right}</div>}
     </header>
   );
 }

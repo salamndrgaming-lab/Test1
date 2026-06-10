@@ -48,9 +48,9 @@ export function ScoreCard({ game }: { game: Game }) {
     (game.awayScore ?? 0) > (game.homeScore ?? 0);
 
   return (
-    <div className="card">
-      <div className="mb-1.5 flex items-center justify-between text-xs">
-        <span className="rounded bg-[var(--surface-2)] px-1.5 py-0.5 font-semibold">
+    <div className="card card-hover">
+      <div className="mb-2 flex items-center justify-between text-xs">
+        <span className="rounded-md bg-[var(--surface-2)] px-2 py-0.5 font-semibold tracking-wide">
           {game.league}
         </span>
         <span

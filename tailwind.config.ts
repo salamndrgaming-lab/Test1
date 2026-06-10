@@ -17,8 +17,8 @@ const config: Config = {
           "lean-right": "#f87171",
           right: "#dc2626",
         },
-        good: "#16a34a",
-        bad: "#dc2626",
+        good: "#22c55e",
+        bad: "#ef4444",
       },
       fontFamily: {
         sans: ["var(--font-sans)", "system-ui", "sans-serif"],

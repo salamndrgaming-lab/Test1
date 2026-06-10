@@ -56,9 +56,9 @@ export default function EntertainmentPage() {
           onRetry={refetch}
         />
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="animate-in grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {items.map((item) => (
-            <Card key={item.id}>
+            <Card key={item.id} hover>
               <div className="mb-1 flex items-center justify-between">
                 <span className="text-2xl">{KIND_ICON[item.kind]}</span>
                 {item.rating !== undefined && (

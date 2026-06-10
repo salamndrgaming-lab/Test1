@@ -57,7 +57,7 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
       <DisclaimerBanner />
 
       {/* Sticky payout summary */}
-      <div className="sticky top-2 z-10 rounded-2xl border border-[var(--accent)]/40 bg-[var(--surface-2)] p-4 shadow-lg md:top-16">
+      <div className="sticky top-2 z-10 rounded-2xl border border-sky-400/40 bg-[var(--surface-2)] p-4 shadow-lg md:top-16">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <p className="text-xs text-[var(--muted)]">

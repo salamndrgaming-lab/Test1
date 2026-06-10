@@ -4,7 +4,12 @@ import { useMemo, useState } from "react";
 import type { Article, BiasLean, NewsCategory } from "@/types";
 import { useProvider } from "@/lib/useProvider";
 import { ArticleCard } from "@/components/news/ArticleCard";
-import { PageHeader, SourceBadge, Spinner, ErrorState } from "@/components/ui";
+import {
+  PageHeader,
+  SourceBadge,
+  SkeletonCards,
+  ErrorState,
+} from "@/components/ui";
 import { ALL_LEANS, LEAN_LABEL, LEAN_SCORE } from "@/lib/bias";
 import { classNames } from "@/lib/format";
 
@@ -117,7 +122,7 @@ export default function NewsPage() {
         </select>
       </div>
 
-      {loading && <Spinner label="Loading headlines…" />}
+      {loading && <SkeletonCards count={6} />}
       {!loading && error && (
         <ErrorState
           message={`Couldn't load live headlines. ${error}`}
@@ -129,11 +134,13 @@ export default function NewsPage() {
           No articles match this filter.
         </p>
       )}
-      <div className="grid gap-3 sm:grid-cols-2">
-        {articles.map((a) => (
-          <ArticleCard key={a.id} article={a} />
-        ))}
-      </div>
+      {!loading && !error && articles.length > 0 && (
+        <div className="animate-in grid gap-3 sm:grid-cols-2">
+          {articles.map((a) => (
+            <ArticleCard key={a.id} article={a} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

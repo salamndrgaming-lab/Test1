@@ -12,6 +12,7 @@ import {
 } from "@/components/ui";
 import { ALL_LEANS, LEAN_LABEL, LEAN_SCORE } from "@/lib/bias";
 import { classNames } from "@/lib/format";
+import { accentVars } from "@/lib/sections";
 
 const CATEGORIES: NewsCategory[] = [
   "top",
@@ -61,8 +62,9 @@ export default function NewsPage() {
   }, [data, leanFilter, sort]);
 
   return (
-    <div>
+    <div style={accentVars("news")}>
       <PageHeader
+        kicker="The Feed"
         title="News"
         subtitle="Sort and filter the feed by category, political lean, and tone."
         right={

@@ -5,6 +5,7 @@ import type { EntertainmentItem } from "@/types";
 import { useProvider } from "@/lib/useProvider";
 import { PageHeader, SourceBadge, Spinner, Card, ErrorState } from "@/components/ui";
 import { classNames } from "@/lib/format";
+import { accentVars } from "@/lib/sections";
 
 const KINDS: (EntertainmentItem["kind"] | "all")[] = [
   "all",
@@ -29,8 +30,9 @@ export default function EntertainmentPage() {
   const items = (data ?? []).filter((i) => kind === "all" || i.kind === kind);
 
   return (
-    <div>
+    <div style={accentVars("ent")}>
       <PageHeader
+        kicker="Culture"
         title="Entertainment"
         subtitle="Movies, TV, music, and gaming — what's trending."
         right={result && <SourceBadge source={result.source} note={result.error} />}

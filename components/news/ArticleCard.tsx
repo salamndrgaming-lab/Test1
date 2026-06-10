@@ -45,8 +45,8 @@ export function ArticleCard({
       </div>
       <h3
         className={classNames(
-          "font-semibold leading-snug transition-colors group-hover:text-[var(--accent)]",
-          compact ? "text-sm" : "text-[0.95rem]",
+          "font-serif font-medium leading-snug tracking-tight text-[#f8fafc] transition-colors group-hover:text-[var(--accent)]",
+          compact ? "text-[0.95rem]" : "text-[1.05rem]",
         )}
       >
         {article.title}

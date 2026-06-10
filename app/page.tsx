@@ -7,6 +7,7 @@ import { Card, PageHeader, SourceBadge, Spinner, BiasBadge } from "@/components/
 import { BiasSpectrum } from "@/components/charts/BiasSpectrum";
 import { ScoreCard } from "@/components/sports/ScoreCard";
 import { timeAgo } from "@/lib/format";
+import { accentVars } from "@/lib/sections";
 
 function SectionLink({ href, children }: { href: string; children: string }) {
   return (
@@ -30,8 +31,9 @@ export default function HomePage() {
   const games = (sports.data ?? []).slice(0, 2);
 
   return (
-    <div>
+    <div style={accentVars("home")}>
       <PageHeader
+        kicker="Your Briefing"
         title="NewsScope"
         subtitle="Your news, from local to national — visualized."
         right={
@@ -45,7 +47,7 @@ export default function HomePage() {
         {/* Top stories */}
         <Card className="md:col-span-2">
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="font-semibold">Top Stories</h2>
+            <h2 className="font-serif text-[1.05rem] font-medium text-[#f8fafc]">Top Stories</h2>
             <SectionLink href="/news">All news</SectionLink>
           </div>
           {news.loading ? (
@@ -61,7 +63,7 @@ export default function HomePage() {
                     className="flex items-start gap-2"
                   >
                     <BiasBadge lean={a.bias} />
-                    <span className="flex-1 text-sm font-medium leading-snug">
+                    <span className="flex-1 font-serif text-[0.95rem] leading-snug text-[#f8fafc] transition-colors hover:text-[var(--accent)]">
                       {a.title}
                     </span>
                     <span className="shrink-0 text-xs text-[var(--muted)]">
@@ -77,7 +79,7 @@ export default function HomePage() {
         {/* Bias snapshot */}
         <Card>
           <div className="mb-2 flex items-center justify-between">
-            <h2 className="font-semibold">Bias Snapshot</h2>
+            <h2 className="font-serif text-[1.05rem] font-medium text-[#f8fafc]">Bias Snapshot</h2>
             <SectionLink href="/bias">Explore</SectionLink>
           </div>
           {news.loading ? <Spinner /> : <BiasSpectrum articles={news.data ?? []} />}
@@ -86,7 +88,7 @@ export default function HomePage() {
         {/* Good news */}
         <Card className="bg-gradient-to-br from-green-500/10 to-transparent">
           <div className="mb-2 flex items-center justify-between">
-            <h2 className="font-semibold text-good">☀ Good News</h2>
+            <h2 className="font-serif text-[1.05rem] font-medium text-good">Good News</h2>
             <SectionLink href="/good-news">More</SectionLink>
           </div>
           {good.loading ? (
@@ -110,7 +112,7 @@ export default function HomePage() {
         {/* Weather widget */}
         <Card>
           <div className="mb-2 flex items-center justify-between">
-            <h2 className="font-semibold">Weather</h2>
+            <h2 className="font-serif text-[1.05rem] font-medium text-[#f8fafc]">Weather</h2>
             <SectionLink href="/weather">Forecast</SectionLink>
           </div>
           {weather.loading ? (
@@ -135,7 +137,7 @@ export default function HomePage() {
         {/* Today's games */}
         <Card>
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="font-semibold">Today&apos;s Games</h2>
+            <h2 className="font-serif text-[1.05rem] font-medium text-[#f8fafc]">Today&apos;s Games</h2>
             <SectionLink href="/sports">Sports</SectionLink>
           </div>
           {sports.loading ? (

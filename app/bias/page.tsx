@@ -8,6 +8,7 @@ import { BiasSpectrum } from "@/components/charts/BiasSpectrum";
 import { CoverageSpread } from "@/components/charts/CoverageSpread";
 import { SentimentTimeline } from "@/components/charts/SentimentTimeline";
 import { TopicCluster } from "@/components/charts/TopicCluster";
+import { accentVars } from "@/lib/sections";
 
 // Leaflet must render client-side only.
 const GeoHeatmap = dynamic(
@@ -40,9 +41,10 @@ export default function BiasPage() {
   const articles = data ?? [];
 
   return (
-    <div>
+    <div style={accentVars("bias")}>
       <PageHeader
-        title="Bias & Coverage Lab"
+        kicker="Analysis"
+        title="Bias & Coverage"
         subtitle="See the news cycle's slant, mood, topics, and geography at a glance."
         right={
           result && <SourceBadge source={result.source} note={result.error} />

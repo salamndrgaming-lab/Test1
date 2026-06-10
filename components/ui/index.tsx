@@ -121,20 +121,28 @@ export function BiasBadge({ lean }: { lean: BiasLean }) {
 export function PageHeader({
   title,
   subtitle,
+  kicker,
   right,
 }: {
   title: string;
   subtitle?: string;
+  kicker?: string;
   right?: ReactNode;
 }) {
   return (
-    <header className="mb-5 flex items-start justify-between gap-3">
+    <header className="mb-7 mt-1 flex items-start justify-between gap-4">
       <div>
-        <h1 className="gradient-text text-[1.75rem] font-extrabold leading-tight tracking-tight">
+        {kicker && (
+          <div className="mb-2 flex items-center gap-2.5">
+            <span className="accent-rule" />
+            <span className="kicker">{kicker}</span>
+          </div>
+        )}
+        <h1 className="headline text-[2rem] leading-[1.08] sm:text-[2.4rem]">
           {title}
         </h1>
         {subtitle && (
-          <p className="mt-1 max-w-prose text-sm text-[var(--muted)]">
+          <p className="mt-2.5 max-w-prose text-[0.95rem] leading-relaxed text-[var(--muted)]">
             {subtitle}
           </p>
         )}

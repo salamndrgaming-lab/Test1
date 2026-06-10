@@ -10,6 +10,7 @@ import {
   ErrorState,
 } from "@/components/ui";
 import { SentimentGauge } from "@/components/charts/SentimentGauge";
+import { accentVars } from "@/lib/sections";
 
 export default function GoodNewsPage() {
   const { result, data, loading, error, refetch } =
@@ -21,9 +22,10 @@ export default function GoodNewsPage() {
       : 0;
 
   return (
-    <div>
+    <div style={accentVars("good")}>
       <PageHeader
-        title="☀ Good News"
+        kicker="Good News"
+        title="The Bright Side"
         subtitle="Positive-sentiment stories, surfaced from the feed."
         right={
           result && <SourceBadge source={result.source} note={result.error} />

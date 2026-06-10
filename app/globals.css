@@ -20,6 +20,10 @@
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, "SF Pro Text", "Segoe UI", Roboto,
     Helvetica, Arial, sans-serif;
+  /* ui-serif renders as New York on iOS / Apple platforms — editorial feel */
+  --font-serif:
+    ui-serif, "New York", "Iowan Old Style", Georgia, Cambria,
+    "Times New Roman", Times, serif;
 }
 
 html {
@@ -34,14 +38,9 @@ body {
   /* layered ambient glows over a deep base */
   background:
     radial-gradient(
-      120% 80% at 50% -10%,
-      rgba(56, 189, 248, 0.1),
+      100% 60% at 50% -15%,
+      color-mix(in srgb, var(--accent) 9%, transparent),
       transparent 60%
-    ),
-    radial-gradient(
-      90% 60% at 100% 0%,
-      rgba(129, 140, 248, 0.08),
-      transparent 55%
     ),
     var(--bg);
   background-attachment: fixed;
@@ -100,6 +99,31 @@ body {
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
+  }
+
+  /* Editorial serif headline — high contrast, light weight, tight tracking. */
+  .headline {
+    font-family: var(--font-serif);
+    font-weight: 500;
+    letter-spacing: -0.012em;
+    color: #f8fafc;
+  }
+
+  /* Small colored section label above a headline. */
+  .kicker {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  /* Subtle colored top rule for section cards. */
+  .accent-rule {
+    height: 2px;
+    width: 2.25rem;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
   }
 
   .skeleton {

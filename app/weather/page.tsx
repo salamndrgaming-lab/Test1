@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { WeatherReport, ProviderResult } from "@/types";
 import { PageHeader, SourceBadge, Spinner, Card, ErrorState } from "@/components/ui";
 import { ForecastStrip } from "@/components/weather/ForecastStrip";
+import { accentVars } from "@/lib/sections";
 
 export default function WeatherPage() {
   const [url, setUrl] = useState("/api/weather");
@@ -49,8 +50,9 @@ export default function WeatherPage() {
   const w = report?.data;
 
   return (
-    <div>
+    <div style={accentVars("weather")}>
       <PageHeader
+        kicker="Forecast"
         title="Weather"
         subtitle="Your local forecast, plus lookup for anywhere."
         right={report && <SourceBadge source={report.source} note={report.error} />}

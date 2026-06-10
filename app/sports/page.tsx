@@ -10,6 +10,7 @@ import { OddsTable } from "@/components/sports/OddsTable";
 import { OddsBarChart } from "@/components/charts/OddsBarChart";
 import { SgpBuilder } from "@/components/sports/SgpBuilder";
 import { classNames } from "@/lib/format";
+import { accentVars } from "@/lib/sections";
 
 type Tab = "scores" | "odds" | "sgp";
 
@@ -22,9 +23,10 @@ export default function SportsPage() {
   const source = games.result;
 
   return (
-    <div>
+    <div style={accentVars("sports")}>
       <PageHeader
-        title="Sports"
+        kicker="Sports"
+        title="The Sports Desk"
         subtitle="Scores, market odds, and a data-backed SGP research tool."
         right={source && <SourceBadge source={source.source} note={source.error} />}
       />

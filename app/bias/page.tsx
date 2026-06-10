@@ -8,6 +8,7 @@ import { BiasSpectrum } from "@/components/charts/BiasSpectrum";
 import { CoverageSpread } from "@/components/charts/CoverageSpread";
 import { SentimentTimeline } from "@/components/charts/SentimentTimeline";
 import { TopicCluster } from "@/components/charts/TopicCluster";
+import { BlindspotColumns } from "@/components/news/BlindspotColumns";
 import { accentVars } from "@/lib/sections";
 
 // Leaflet must render client-side only.
@@ -50,6 +51,15 @@ export default function BiasPage() {
           result && <SourceBadge source={result.source} note={result.error} />
         }
       />
+
+      <Card className="mb-4">
+        <h3 className="font-semibold">Blindspot — Who&apos;s Covering This?</h3>
+        <p className="mb-3 text-xs text-[var(--muted)]">
+          See how Left, Center, and Right outlets cover the same story. A
+          highlighted column means one side is largely ignoring it.
+        </p>
+        <BlindspotColumns />
+      </Card>
 
       {loading ? (
         <Spinner label="Analyzing coverage…" />

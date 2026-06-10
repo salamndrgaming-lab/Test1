@@ -11,7 +11,9 @@ type IconName =
   | "sports"
   | "weather"
   | "bias"
-  | "ent";
+  | "ent"
+  | "markets"
+  | "settings";
 
 interface Tab {
   href: string;
@@ -27,6 +29,7 @@ const TABS: Tab[] = [
   { href: "/weather", label: "Weather", icon: "weather" },
   { href: "/bias", label: "Bias", icon: "bias" },
   { href: "/entertainment", label: "Ent.", icon: "ent" },
+  { href: "/settings", label: "Settings", icon: "settings" },
 ];
 
 function Icon({ name, className }: { name: IconName; className?: string }) {
@@ -87,6 +90,21 @@ function Icon({ name, className }: { name: IconName; className?: string }) {
       return (
         <svg {...common}>
           <path d="m12 3 2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.8 6.8 19l1-5.8-4.2-4.1 5.8-.8Z" />
+        </svg>
+      );
+    case "markets":
+      return (
+        <svg {...common}>
+          <path d="M4 16l4-5 3 3 5-7" />
+          <path d="M14 7h3v3" />
+          <path d="M3 21h18" />
+        </svg>
+      );
+    case "settings":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="3" />
+          <path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1M18.4 18.4l-2.1-2.1M7.7 7.7 5.6 5.6" />
         </svg>
       );
   }

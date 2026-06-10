@@ -2,6 +2,10 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { NavTabs } from "@/components/layout/NavTabs";
 import { Footer } from "@/components/layout/Footer";
+import { SettingsProvider } from "@/components/SettingsProvider";
+
+// Applies saved theme / text-scale / reduce-motion before first paint (no FOUC).
+const themeInit = `(function(){try{var s=JSON.parse(localStorage.getItem('newsscope.settings')||'{}');var r=document.documentElement;r.dataset.theme=s.theme||'dark';if(s.textScale)r.style.setProperty('--text-scale',String(s.textScale));if(s.reduceMotion)r.dataset.reduceMotion='true';}catch(e){document.documentElement.dataset.theme='dark';}})();`;
 
 export const metadata: Metadata = {
   title: "NewsScope — News, Visualized",
@@ -29,11 +33,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInit }} />
+      </head>
       <body>
-        <NavTabs />
-        <main className="mx-auto max-w-5xl px-4 pt-5 md:pt-6">{children}</main>
-        <Footer />
+        <SettingsProvider>
+          <NavTabs />
+          <main className="mx-auto max-w-5xl px-4 pt-5 md:pt-6">{children}</main>
+          <Footer />
+        </SettingsProvider>
       </body>
     </html>
   );

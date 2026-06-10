@@ -8,6 +8,7 @@ export interface NewsParams {
   category?: NewsCategory;
   scope?: Scope;
   query?: string;
+  place?: string; // for scope === "local"
 }
 
 // Map our categories to Google News RSS topic feeds (keyless).
@@ -33,10 +34,17 @@ const TOPIC_FEED: Partial<Record<NewsCategory, string>> = {
     "https://news.google.com/rss/search?q=local%20news&hl=en-US&gl=US&ceid=US:en",
 };
 
+function search(q: string): string {
+  return `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`;
+}
+
 function feedUrl(params: NewsParams): string {
-  if (params.query) {
-    return `https://news.google.com/rss/search?q=${encodeURIComponent(params.query)}&hl=en-US&gl=US&ceid=US:en`;
+  if (params.query) return search(params.query);
+  // local-first: query Google News for the user's place
+  if (params.scope === "local" && params.place) {
+    return search(`${params.place} local news`);
   }
+  if (params.scope === "world") return TOPIC_FEED.world!;
   return TOPIC_FEED[params.category ?? "top"] ?? TOPIC_FEED.top!;
 }
 

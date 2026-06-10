@@ -26,8 +26,25 @@
     "Times New Roman", Times, serif;
 }
 
+/* Light theme — overrides the neutral tokens; per-section accents are kept
+   (they're set at runtime by accentVars). */
+:root[data-theme="light"] {
+  --bg: #f4f6fb;
+  --bg-2: #eef1f7;
+  --surface: #ffffff;
+  --surface-2: #f1f4f9;
+  --surface-3: #e6ebf3;
+  --border: #d4dbe6;
+  --border-soft: #e4e9f1;
+  --text: #0f172a;
+  --muted: #5b6675;
+  --muted-2: #8a94a3;
+}
+
 html {
   -webkit-text-size-adjust: 100%;
+  /* user-adjustable text size (Settings) */
+  font-size: calc(100% * var(--text-scale, 1));
 }
 
 body {
@@ -106,7 +123,7 @@ body {
     font-family: var(--font-serif);
     font-weight: 500;
     letter-spacing: -0.012em;
-    color: #f8fafc;
+    color: var(--text);
   }
 
   /* Small colored section label above a headline. */
@@ -161,6 +178,32 @@ body {
 
 .animate-in {
   animation: fadeInUp 0.35s ease both;
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+.animate-marquee {
+  animation: marquee 32s linear infinite;
+}
+
+/* Reduce-motion: user setting (data attr) OR OS preference disables animation */
+:root[data-reduce-motion] .animate-in,
+:root[data-reduce-motion] .animate-marquee,
+:root[data-reduce-motion] .skeleton {
+  animation: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-in,
+  .animate-marquee,
+  .skeleton {
+    animation: none !important;
+  }
 }
 
 /* Leaflet container needs an explicit height */

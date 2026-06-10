@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import type { Article, BiasLean, NewsCategory } from "@/types";
 import { useProvider } from "@/lib/useProvider";
 import { ArticleCard } from "@/components/news/ArticleCard";
-import { PageHeader, SourceBadge, Spinner } from "@/components/ui";
+import { PageHeader, SourceBadge, Spinner, ErrorState } from "@/components/ui";
 import { ALL_LEANS, LEAN_LABEL, LEAN_SCORE } from "@/lib/bias";
 import { classNames } from "@/lib/format";
 
@@ -26,7 +26,7 @@ export default function NewsPage() {
   const [leanFilter, setLeanFilter] = useState<BiasLean | "all">("all");
   const [sort, setSort] = useState<SortKey>("recent");
 
-  const { result, data, loading } = useProvider<Article[]>(
+  const { result, data, loading, error, refetch } = useProvider<Article[]>(
     `/api/news?category=${category}`,
   );
 
@@ -61,7 +61,7 @@ export default function NewsPage() {
         title="News"
         subtitle="Sort and filter the feed by category, political lean, and tone."
         right={
-          result && <SourceBadge source={result.source} note={result.note} />
+          result && <SourceBadge source={result.source} note={result.error} />
         }
       />
 
@@ -118,7 +118,13 @@ export default function NewsPage() {
       </div>
 
       {loading && <Spinner label="Loading headlines…" />}
-      {!loading && articles.length === 0 && (
+      {!loading && error && (
+        <ErrorState
+          message={`Couldn't load live headlines. ${error}`}
+          onRetry={refetch}
+        />
+      )}
+      {!loading && !error && articles.length === 0 && (
         <p className="py-8 text-center text-sm text-[var(--muted)]">
           No articles match this filter.
         </p>

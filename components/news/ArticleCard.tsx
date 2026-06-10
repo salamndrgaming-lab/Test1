@@ -29,7 +29,7 @@ export function ArticleCard({
   return (
     <a
       href={article.url}
-      target={article.url === "#" ? undefined : "_blank"}
+      target="_blank"
       rel="noopener noreferrer"
       className="card block transition-colors hover:border-[var(--accent)]/50"
     >

@@ -2,7 +2,7 @@
 
 A mobile-first **news aggregation & visualization** app — your news from local to national, with bias sorting, a Good News tab, a sports odds + SGP research tool, weather, and entertainment.
 
-Built with **Next.js (App Router) + TypeScript + Tailwind CSS**. Uses **free / keyless** data sources and falls back to bundled sample data when a source is unavailable, so it runs anywhere (including offline/sandboxed).
+Built with **Next.js (App Router) + TypeScript + Tailwind CSS**. Uses **free / keyless** live data sources only — there is **no sample/seed data**. When a live source is unreachable, the UI shows an "Unavailable / Retry" state rather than fabricated content.
 
 ## Features
 
@@ -20,12 +20,14 @@ Built with **Next.js (App Router) + TypeScript + Tailwind CSS**. Uses **free / k
 | --- | --- |
 | News | Google News RSS |
 | Weather | Open-Meteo (+ geocoding) |
-| Sports | ESPN unofficial JSON |
-| Odds | Bundled odds; optional The Odds API key |
-| Entertainment | Entertainment RSS; optional TMDB key |
-| Bias | Bundled outlet → lean dataset (`data/bias-outlets.json`) |
+| Sports (scores + odds) | ESPN unofficial JSON (keyless) |
+| SGP research slip | Built live from current ESPN games + odds |
+| Entertainment | Entertainment RSS |
+| Bias | Curated outlet → lean reference dataset (`data/bias-outlets.json`) |
 
-Every section reads through a provider in `lib/providers/` wrapped by `withFallback`, which tries the live source (with a timeout) then falls back to seed data in `data/`. The UI shows a **Live** / **Sample data** badge accordingly.
+Every section reads through a provider in `lib/providers/` wrapped by `getLive`, which calls the live source with a timeout and returns a `live` or `error` envelope. The UI shows a **Live** / **Unavailable** badge accordingly. The only bundled data file is the bias reference mapping (outlet → political lean), which is applied to real, live articles — not sample content.
+
+The **SGP research tool** builds a 6+ leg cross-game slip from real, current games and their market odds. Each leg's "model probability" is a transparent heuristic that blends the odds-implied probability with the teams' season win% and home advantage (disclosed, not a black box), and links to the actual ESPN game page. Game-level markets (moneyline) are used because free/keyless sources don't expose player-prop lines.
 
 ## Develop
 

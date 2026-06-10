@@ -36,7 +36,7 @@ export default function HomePage() {
         subtitle="Your news, from local to national — visualized."
         right={
           news.result && (
-            <SourceBadge source={news.result.source} note={news.result.note} />
+            <SourceBadge source={news.result.source} note={news.result.error} />
           )
         }
       />
@@ -56,7 +56,7 @@ export default function HomePage() {
                 <li key={a.id} className="py-2 first:pt-0 last:pb-0">
                   <a
                     href={a.url}
-                    target={a.url === "#" ? undefined : "_blank"}
+                    target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-start gap-2"
                   >
@@ -113,8 +113,12 @@ export default function HomePage() {
             <h2 className="font-semibold">Weather</h2>
             <SectionLink href="/weather">Forecast</SectionLink>
           </div>
-          {weather.loading || !weather.data ? (
+          {weather.loading ? (
             <Spinner />
+          ) : !weather.data ? (
+            <p className="text-sm text-[var(--muted)]">
+              Weather unavailable right now.
+            </p>
           ) : (
             <div className="flex items-center gap-3">
               <span className="text-4xl font-bold tabular-nums">

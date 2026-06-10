@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { withFallback } from "@/lib/providers/withFallback";
+import { getLive } from "@/lib/providers/withFallback";
 import { newsProvider, type NewsParams } from "@/lib/providers/news.provider";
 import type { NewsCategory, Scope } from "@/types";
 
@@ -13,6 +13,6 @@ export async function GET(req: NextRequest) {
     scope: (sp.get("scope") as Scope) ?? undefined,
     query: sp.get("q") ?? undefined,
   };
-  const result = await withFallback(newsProvider, params);
+  const result = await getLive(newsProvider, params);
   return NextResponse.json(result);
 }

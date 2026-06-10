@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { withFallback } from "@/lib/providers/withFallback";
+import { getLive } from "@/lib/providers/withFallback";
 import {
   weatherProvider,
   geocodeProvider,
@@ -17,8 +17,8 @@ export async function GET(req: NextRequest) {
 
   // If a text query was supplied, geocode it first (keyless).
   if (q && (lat === undefined || lon === undefined)) {
-    const geo = await withFallback(geocodeProvider, { q });
-    const first = geo.data[0];
+    const geo = await getLive(geocodeProvider, { q });
+    const first = geo.data?.[0];
     if (first) {
       lat = first.lat;
       lon = first.lon;
@@ -28,6 +28,6 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const result = await withFallback(weatherProvider, { lat, lon, place });
+  const result = await getLive(weatherProvider, { lat, lon, place });
   return NextResponse.json(result);
 }

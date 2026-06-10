@@ -1,6 +1,5 @@
 import type { WeatherReport } from "@/types";
 import { fetchJson, type DataProvider } from "./withFallback";
-import { seedWeather } from "@/data/seed-weather";
 
 export interface WeatherParams {
   lat?: number;
@@ -54,8 +53,10 @@ const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export const weatherProvider: DataProvider<WeatherParams, WeatherReport> = {
   name: "Open-Meteo",
   async fetchLive(params, signal) {
+    const hasCoords = params.lat !== undefined && params.lon !== undefined;
     const lat = params.lat ?? 40.7128;
     const lon = params.lon ?? -74.006;
+    const place = params.place ?? (hasCoords ? "Selected Location" : "New York, NY");
     const url =
       `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
       `&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code` +
@@ -64,7 +65,7 @@ export const weatherProvider: DataProvider<WeatherParams, WeatherReport> = {
     const data = await fetchJson<OpenMeteoResponse>(url, signal);
     return {
       current: {
-        place: params.place ?? "Your Location",
+        place,
         tempF: Math.round(data.current.temperature_2m),
         condition: WMO[data.current.weather_code] ?? "—",
         humidity: data.current.relative_humidity_2m,
@@ -79,9 +80,6 @@ export const weatherProvider: DataProvider<WeatherParams, WeatherReport> = {
         precipChance: data.daily.precipitation_probability_max[i] ?? 0,
       })),
     };
-  },
-  seed(params) {
-    return seedWeather(params.place ?? "Your Area");
   },
 };
 
@@ -115,8 +113,5 @@ export const geocodeProvider: DataProvider<{ q: string }, GeoResult[]> = {
       admin1: r.admin1,
       country: r.country,
     }));
-  },
-  seed({ q }) {
-    return [{ name: q || "New York", lat: 40.7128, lon: -74.006, country: "US" }];
   },
 };

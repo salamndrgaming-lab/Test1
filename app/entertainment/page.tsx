@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { EntertainmentItem } from "@/types";
 import { useProvider } from "@/lib/useProvider";
-import { PageHeader, SourceBadge, Spinner, Card } from "@/components/ui";
+import { PageHeader, SourceBadge, Spinner, Card, ErrorState } from "@/components/ui";
 import { classNames } from "@/lib/format";
 
 const KINDS: (EntertainmentItem["kind"] | "all")[] = [
@@ -24,7 +24,7 @@ const KIND_ICON: Record<EntertainmentItem["kind"], string> = {
 
 export default function EntertainmentPage() {
   const [kind, setKind] = useState<(typeof KINDS)[number]>("all");
-  const { result, data, loading } =
+  const { result, data, loading, error, refetch } =
     useProvider<EntertainmentItem[]>("/api/entertainment");
   const items = (data ?? []).filter((i) => kind === "all" || i.kind === kind);
 
@@ -33,7 +33,7 @@ export default function EntertainmentPage() {
       <PageHeader
         title="Entertainment"
         subtitle="Movies, TV, music, and gaming — what's trending."
-        right={result && <SourceBadge source={result.source} note={result.note} />}
+        right={result && <SourceBadge source={result.source} note={result.error} />}
       />
 
       <div className="mb-4 flex flex-wrap gap-2">
@@ -50,6 +50,11 @@ export default function EntertainmentPage() {
 
       {loading ? (
         <Spinner label="Loading what's hot…" />
+      ) : error ? (
+        <ErrorState
+          message={`Couldn't load entertainment. ${error}`}
+          onRetry={refetch}
+        />
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {items.map((item) => (

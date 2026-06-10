@@ -154,12 +154,12 @@ export interface EntertainmentItem {
 
 // ---------- Provider envelope ----------
 
-export type DataSourceKind = "live" | "seed";
+export type DataSourceKind = "live" | "error";
 
 export interface ProviderResult<T> {
-  data: T;
+  data: T | null;
   source: DataSourceKind;
   fetchedAt: string;
-  /** human note about which upstream was used / why fallback happened */
-  note?: string;
+  /** present when source === "error" */
+  error?: string;
 }

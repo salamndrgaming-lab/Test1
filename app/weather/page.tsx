@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { WeatherReport, ProviderResult } from "@/types";
-import { PageHeader, SourceBadge, Spinner, Card } from "@/components/ui";
+import { PageHeader, SourceBadge, Spinner, Card, ErrorState } from "@/components/ui";
 import { ForecastStrip } from "@/components/weather/ForecastStrip";
 
 export default function WeatherPage() {
@@ -53,7 +53,7 @@ export default function WeatherPage() {
       <PageHeader
         title="Weather"
         subtitle="Your local forecast, plus lookup for anywhere."
-        right={report && <SourceBadge source={report.source} note={report.note} />}
+        right={report && <SourceBadge source={report.source} note={report.error} />}
       />
 
       <form onSubmit={submit} className="mb-4 flex gap-2">
@@ -71,8 +71,17 @@ export default function WeatherPage() {
         </button>
       </form>
 
-      {loading || !w ? (
+      {loading ? (
         <Spinner label="Fetching forecast…" />
+      ) : !w ? (
+        <ErrorState
+          message={
+            report?.error
+              ? `Couldn't load the forecast. ${report.error}`
+              : "Couldn't load the forecast."
+          }
+          onRetry={() => setUrl((u) => `${u}${u.includes("?") ? "&" : "?"}r=${Date.now()}`)}
+        />
       ) : (
         <div className="space-y-4">
           <Card className="bg-gradient-to-br from-sky-500/15 to-transparent">

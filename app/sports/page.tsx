@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { Game, MarketOdds, SgpRecommendation } from "@/types";
 import { useProvider } from "@/lib/useProvider";
-import { PageHeader, SourceBadge, Spinner, Card } from "@/components/ui";
+import { PageHeader, SourceBadge, Spinner, Card, ErrorState } from "@/components/ui";
 import { DisclaimerBanner } from "@/components/layout/DisclaimerBanner";
 import { ScoreCard } from "@/components/sports/ScoreCard";
 import { OddsTable } from "@/components/sports/OddsTable";
@@ -26,7 +26,7 @@ export default function SportsPage() {
       <PageHeader
         title="Sports"
         subtitle="Scores, market odds, and a data-backed SGP research tool."
-        right={source && <SourceBadge source={source.source} note={source.note} />}
+        right={source && <SourceBadge source={source.source} note={source.error} />}
       />
 
       <DisclaimerBanner />
@@ -50,6 +50,15 @@ export default function SportsPage() {
         <>
           {games.loading ? (
             <Spinner label="Loading games…" />
+          ) : games.error ? (
+            <ErrorState
+              message={`Couldn't load live scores. ${games.error}`}
+              onRetry={games.refetch}
+            />
+          ) : (games.data ?? []).length === 0 ? (
+            <p className="py-8 text-center text-sm text-[var(--muted)]">
+              No games scheduled right now.
+            </p>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {(games.data ?? []).map((g) => (
@@ -60,21 +69,29 @@ export default function SportsPage() {
         </>
       )}
 
-      {tab === "odds" && (
-        <div className="space-y-4">
-          <Card>
-            <h3 className="mb-3 font-semibold">Market Odds</h3>
-            <OddsTable games={games.data ?? []} odds={odds.data ?? []} />
-          </Card>
-          <Card>
-            <h3 className="mb-1 font-semibold">Implied Win Probability</h3>
-            <p className="mb-3 text-xs text-[var(--muted)]">
-              Derived from moneyline odds. Highlighted bars are favorites.
-            </p>
-            <OddsBarChart games={games.data ?? []} odds={odds.data ?? []} />
-          </Card>
-        </div>
-      )}
+      {tab === "odds" &&
+        (odds.loading ? (
+          <Spinner label="Loading odds…" />
+        ) : odds.error ? (
+          <ErrorState
+            message={`Couldn't load live odds. ${odds.error}`}
+            onRetry={odds.refetch}
+          />
+        ) : (
+          <div className="space-y-4">
+            <Card>
+              <h3 className="mb-3 font-semibold">Market Odds</h3>
+              <OddsTable games={games.data ?? []} odds={odds.data ?? []} />
+            </Card>
+            <Card>
+              <h3 className="mb-1 font-semibold">Implied Win Probability</h3>
+              <p className="mb-3 text-xs text-[var(--muted)]">
+                Derived from moneyline odds. Highlighted bars are favorites.
+              </p>
+              <OddsBarChart games={games.data ?? []} odds={odds.data ?? []} />
+            </Card>
+          </div>
+        ))}
 
       {tab === "sgp" && (
         <>
@@ -83,9 +100,14 @@ export default function SportsPage() {
           ) : sgp.data ? (
             <SgpBuilder rec={sgp.data} />
           ) : (
-            <p className="text-sm text-[var(--muted)]">
-              Could not build a research slip right now.
-            </p>
+            <ErrorState
+              message={
+                sgp.error
+                  ? `No live research slip available. ${sgp.error}`
+                  : "Could not build a research slip right now."
+              }
+              onRetry={sgp.refetch}
+            />
           )}
         </>
       )}

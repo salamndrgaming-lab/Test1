@@ -1,4 +1,5 @@
-import type { SgpLeg, SgpRecommendation } from "@/types";
+import type { Confidence, Game, MarketOdds, SgpLeg, SgpRecommendation } from "@/types";
+import { formatOdds } from "@/lib/format";
 
 export const SGP_DISCLAIMER =
   "For informational and educational purposes only. This is not betting or " +
@@ -69,14 +70,16 @@ export function legEdge(leg: SgpLeg): number {
 export function buildRecommendation(
   candidates: SgpLeg[],
   minLegs = 6,
+  cap = 10,
 ): SgpRecommendation {
   const ranked = [...candidates].sort((a, b) => legEdge(b) - legEdge(a));
-  const legs = ranked.slice(0, Math.max(minLegs, Math.min(8, ranked.length)));
+  const target = Math.min(cap, Math.max(minLegs, Math.min(8, ranked.length)));
+  const legs = ranked.slice(0, target);
   const combinedDecimalOdds = combineLegs(legs);
   const modelProbability = legs.reduce((acc, l) => acc * l.modelProbability, 1);
   return {
-    id: `sgp-${Date.now()}`,
-    title: `${legs.length}-Leg Same-Game / Cross-Game Research Slip`,
+    id: `sgp-${legs.map((l) => l.id).join("-").slice(0, 40)}`,
+    title: `${legs.length}-Leg Cross-Game Research Slip`,
     legs,
     combinedDecimalOdds: Number(combinedDecimalOdds.toFixed(2)),
     combinedAmericanOdds: decimalToAmerican(combinedDecimalOdds),
@@ -86,4 +89,102 @@ export function buildRecommendation(
     modelProbability: Number(modelProbability.toFixed(4)),
     disclaimer: SGP_DISCLAIMER,
   };
+}
+
+// ---------- Build legs from REAL, current ESPN games + odds ----------
+
+/** Wins / total games from a record like "41-15" or "34-16-5" (NHL). */
+function winPct(record?: string): number | null {
+  if (!record) return null;
+  const nums = record.split("-").map((n) => Number(n.trim()));
+  if (nums.some((n) => Number.isNaN(n))) return null;
+  const total = nums.reduce((a, b) => a + b, 0);
+  if (total === 0) return null;
+  return nums[0] / total;
+}
+
+function confidenceFor(modelProb: number, hasRecords: boolean): Confidence {
+  if (hasRecords && modelProb >= 0.66) return "high";
+  if (modelProb >= 0.57) return "medium";
+  return "low";
+}
+
+/**
+ * Turn upcoming/live games with real odds into moneyline-favorite research
+ * legs. The model probability is a TRANSPARENT heuristic that blends the
+ * odds-implied probability with the teams' season win% and home advantage —
+ * disclosed, not a black box — so the "edge" shown is honest and reproducible.
+ */
+export function legsFromGames(
+  games: Game[],
+  odds: MarketOdds[],
+  gameLinks: Record<string, string> = {},
+): SgpLeg[] {
+  const oddsByGame = new Map(odds.map((o) => [o.gameId, o]));
+  const legs: SgpLeg[] = [];
+
+  for (const g of games) {
+    if (g.status === "final") continue; // only recent/upcoming
+    const o = oddsByGame.get(g.id);
+    if (!o || o.homeMoneyline === undefined || o.awayMoneyline === undefined)
+      continue;
+
+    const favIsHome = o.homeMoneyline <= o.awayMoneyline;
+    const favTeam = favIsHome ? g.home : g.away;
+    const dogTeam = favIsHome ? g.away : g.home;
+    const favOdds = favIsHome ? o.homeMoneyline : o.awayMoneyline;
+
+    const implied = impliedProbability(americanToDecimal(favOdds));
+    const favWp = winPct(favTeam.record);
+    const dogWp = winPct(dogTeam.record);
+    const hasRecords = favWp !== null && dogWp !== null;
+    const relStrength = hasRecords
+      ? favWp! / (favWp! + dogWp!) + (favIsHome ? 0.03 : 0)
+      : implied;
+    const modelProbability = Math.max(
+      0.05,
+      Math.min(0.97, 0.55 * implied + 0.45 * relStrengthClamp(relStrength)),
+    );
+
+    legs.push({
+      id: `${g.id}-ml`,
+      gameId: g.id,
+      league: g.league,
+      matchup: `${g.away.abbreviation} @ ${g.home.abbreviation}`,
+      market: "Moneyline",
+      selection: `${favTeam.name} ML`,
+      americanOdds: favOdds,
+      modelProbability: Number(modelProbability.toFixed(3)),
+      confidence: confidenceFor(modelProbability, hasRecords),
+      rationale:
+        `${favTeam.name} are the market favorite at ${formatOdds(favOdds)} ` +
+        `${favIsHome ? "at home" : "on the road"} against ${dogTeam.name}` +
+        (hasRecords
+          ? `. Season records: ${favTeam.record} vs ${dogTeam.record}.`
+          : `. Pick reflects the current betting market.`),
+      supportingStats: [
+        { label: "Moneyline", value: formatOdds(favOdds) },
+        { label: "Implied win%", value: `${(implied * 100).toFixed(1)}%` },
+        { label: `${favTeam.abbreviation} record`, value: favTeam.record ?? "N/A" },
+        { label: `${dogTeam.abbreviation} record`, value: dogTeam.record ?? "N/A" },
+        ...(o.total !== undefined
+          ? [{ label: "Game total", value: String(o.total) }]
+          : []),
+      ],
+      references: [
+        gameLinks[g.id]
+          ? { label: "ESPN — Game preview & odds", url: gameLinks[g.id] }
+          : {
+              label: "ESPN — Scoreboard",
+              url: "https://www.espn.com/",
+            },
+      ],
+    });
+  }
+
+  return legs;
+}
+
+function relStrengthClamp(v: number): number {
+  return Math.max(0, Math.min(1, v));
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { ProviderResult } from "@/types";
 
 /** Fetch a ProviderResult<T> from one of our /api routes with loading/error. */
@@ -8,6 +8,9 @@ export function useProvider<T>(url: string) {
   const [result, setResult] = useState<ProviderResult<T> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+
+  const refetch = useCallback(() => setNonce((n) => n + 1), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -16,7 +19,9 @@ export function useProvider<T>(url: string) {
     fetch(url)
       .then((r) => r.json())
       .then((json: ProviderResult<T>) => {
-        if (!cancelled) setResult(json);
+        if (cancelled) return;
+        setResult(json);
+        if (json.source === "error") setError(json.error ?? "Unavailable");
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed");
@@ -27,7 +32,13 @@ export function useProvider<T>(url: string) {
     return () => {
       cancelled = true;
     };
-  }, [url]);
+  }, [url, nonce]);
 
-  return { result, data: result?.data ?? null, loading, error };
+  return {
+    result,
+    data: result?.data ?? null,
+    loading,
+    error,
+    refetch,
+  };
 }

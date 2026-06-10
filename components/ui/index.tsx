@@ -35,19 +35,42 @@ export function SourceBadge({
       title={note}
       className={classNames(
         "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
-        live
-          ? "bg-green-500/15 text-green-300"
-          : "bg-slate-500/15 text-slate-300",
+        live ? "bg-green-500/15 text-green-300" : "bg-red-500/15 text-red-300",
       )}
     >
       <span
         className={classNames(
           "h-2 w-2 rounded-full",
-          live ? "bg-green-400" : "bg-slate-400",
+          live ? "bg-green-400" : "bg-red-400",
         )}
       />
-      {live ? "Live" : "Sample data"}
+      {live ? "Live" : "Unavailable"}
     </span>
+  );
+}
+
+/** Shown when a live source can't be reached — no sample data is substituted. */
+export function ErrorState({
+  message,
+  onRetry,
+}: {
+  message?: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className="card flex flex-col items-center gap-3 py-10 text-center">
+      <p className="text-sm text-[var(--muted)]">
+        {message ?? "Couldn't load live data right now."}
+      </p>
+      {onRetry && (
+        <button
+          onClick={onRetry}
+          className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-slate-900"
+        >
+          Retry
+        </button>
+      )}
+    </div>
   );
 }
 

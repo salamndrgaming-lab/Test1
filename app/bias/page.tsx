@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import type { Article } from "@/types";
 import { useProvider } from "@/lib/useProvider";
-import { Card, PageHeader, SourceBadge, Spinner } from "@/components/ui";
+import { Card, PageHeader, SourceBadge, Spinner, ErrorState } from "@/components/ui";
 import { BiasSpectrum } from "@/components/charts/BiasSpectrum";
 import { CoverageSpread } from "@/components/charts/CoverageSpread";
 import { SentimentTimeline } from "@/components/charts/SentimentTimeline";
@@ -34,7 +34,7 @@ function VizCard({
 }
 
 export default function BiasPage() {
-  const { result, data, loading } = useProvider<Article[]>(
+  const { result, data, loading, error, refetch } = useProvider<Article[]>(
     "/api/news?category=top",
   );
   const articles = data ?? [];
@@ -45,12 +45,17 @@ export default function BiasPage() {
         title="Bias & Coverage Lab"
         subtitle="See the news cycle's slant, mood, topics, and geography at a glance."
         right={
-          result && <SourceBadge source={result.source} note={result.note} />
+          result && <SourceBadge source={result.source} note={result.error} />
         }
       />
 
       {loading ? (
         <Spinner label="Analyzing coverage…" />
+      ) : error ? (
+        <ErrorState
+          message={`Couldn't load live coverage. ${error}`}
+          onRetry={refetch}
+        />
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
           <VizCard

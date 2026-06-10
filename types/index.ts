@@ -216,6 +216,21 @@ export interface MarketsData {
   crypto: Quote[];
 }
 
+export interface IpoEntry {
+  symbol: string;
+  company: string;
+  date?: string; // expected / priced date
+  priceRange?: string;
+  shares?: string;
+  exchange?: string;
+  status: "priced" | "upcoming" | "filed";
+}
+
+export interface IpoData {
+  priced: IpoEntry[];
+  upcoming: IpoEntry[];
+}
+
 // ---------- Provider envelope ----------
 
 export type DataSourceKind = "live" | "error";

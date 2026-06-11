@@ -1,8 +1,9 @@
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Fragment, Suspense, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { AdSlot } from "@/components/ads/AdSlot";
 import type { Article, BiasLean, NewsCategory, Scope } from "@/types";
 import { useProvider } from "@/lib/useProvider";
 import { useSettings } from "@/components/SettingsProvider";
@@ -214,8 +215,15 @@ function NewsInner() {
           )}
           {!loading && !error && articles.length > 0 && (
             <div className="animate-in grid gap-3 sm:grid-cols-2">
-              {articles.map((a) => (
-                <ArticleCard key={a.id} article={a} />
+              {articles.map((a, i) => (
+                <Fragment key={a.id}>
+                  <ArticleCard article={a} />
+                  {i === 5 && (
+                    <div className="sm:col-span-2">
+                      <AdSlot slot={process.env.NEXT_PUBLIC_ADSENSE_SLOT_FEED} />
+                    </div>
+                  )}
+                </Fragment>
               ))}
             </div>
           )}

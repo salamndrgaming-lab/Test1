@@ -45,7 +45,43 @@ strategy lives in the plan file; this is the operational checklist.
   cache to cut API calls and smooth rate limits (and centralize the seam for
   licensed-data swaps).
 
-### 5. Analytics / monitoring
+### 5. Ads (Google AdSense) + getting paid
+**What's wired:** `components/ads/AdSlot.tsx` renders an in-feed unit on `/news`
+for **free users only, after consent** (`ConsentBanner`). Pro users see no ads.
+When AdSense isn't configured it shows a "Go Pro — remove ads" house promo, so
+the slot still earns. `/ads.txt` is generated from your publisher id.
+
+**Setup steps:**
+1. Apply at **adsense.google.com** with your live domain (needs real content +
+   the legal pages — already built). Approval can take days to weeks.
+2. Once approved, copy your **publisher ID** (`ca-pub-…`) → set
+   `NEXT_PUBLIC_ADSENSE_CLIENT` in Vercel env. Redeploy. This loads the AdSense
+   script and auto-populates `/ads.txt` (verify at `https://yourdomain/ads.txt`).
+3. (Optional) Create an **ad unit** in AdSense → copy its slot id →
+   `NEXT_PUBLIC_ADSENSE_SLOT_FEED`. Leave blank to use Auto ads / house promo.
+4. **ads.txt** must be reachable at the domain root (it is, via the route) or
+   AdSense limits/blocks ad serving.
+
+**Connecting payouts (AdSense → money in your bank):**
+1. AdSense → **Payments → Payments info**.
+2. **Verify identity/address:** at ~$10 earned, Google mails a **PIN**; enter it.
+3. **Tax info:** complete the tax form (US: W-9; non-US: W-8BEN) — required or
+   payments are withheld.
+4. **Add a payment method:** bank account for **EFT/wire** (or check where
+   supported). Set it as primary.
+5. **Payment threshold:** Google pays out monthly once your balance clears the
+   **$100 threshold** (~21st of the month).
+> Reality check: display RPM for news runs ~$5–15, so meaningful ad income needs
+> scale (tens of thousands of monthly views). Keep ads minimal; subscription +
+> the house "Go Pro" promo are the better near-term levers.
+
+**EEA/UK note:** personalized ads require a **Google-certified CMP** (IAB TCF).
+Our `ConsentBanner` is a basic gate; add a certified CMP (e.g., Google's own,
+Funding Choices) before serving EEA/UK traffic. Alternatives to AdSense at
+scale: **Ezoic** (low traffic floor), **Mediavine/Raptive** (high floor, higher
+RPM), **Carbon** (dev audiences).
+
+### 6. Analytics / monitoring
 - `NEXT_PUBLIC_POSTHOG_KEY` (funnels), `NEXT_PUBLIC_SENTRY_DSN` (errors),
   Vercel/Plausible for privacy-friendly traffic.
 

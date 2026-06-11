@@ -1,7 +1,11 @@
+"use client";
+
 import type { Article } from "@/types";
 import { BiasBadge } from "@/components/ui";
 import { timeAgo, classNames } from "@/lib/format";
 import { sentimentLabel } from "@/lib/sentiment";
+import { useLibrary } from "@/lib/useLibrary";
+import { usePro } from "@/lib/usePro";
 
 function SentimentDot({ score }: { score: number }) {
   const label = sentimentLabel(score);
@@ -26,11 +30,25 @@ export function ArticleCard({
   article: Article;
   compact?: boolean;
 }) {
+  const { isBookmarked, toggleBookmark, recordRead } = useLibrary();
+  const { isPro } = usePro();
+  const saved = isBookmarked(article.id);
+
+  const onBookmark = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const result = toggleBookmark(article, isPro);
+    if (result === "blocked") {
+      window.location.href = "/upgrade";
+    }
+  };
+
   return (
     <a
       href={article.url}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={() => recordRead(article)}
       className="card card-hover group block"
     >
       <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -39,7 +57,19 @@ export function ArticleCard({
           {article.source}
         </span>
         <SentimentDot score={article.sentiment} />
-        <span className="ml-auto text-xs text-[var(--muted-2)]">
+        <button
+          onClick={onBookmark}
+          aria-label={saved ? "Remove bookmark" : "Bookmark"}
+          className={classNames(
+            "ml-auto text-sm leading-none transition-colors",
+            saved
+              ? "text-[var(--accent)]"
+              : "text-[var(--muted-2)] hover:text-[var(--accent)]",
+          )}
+        >
+          {saved ? "★" : "☆"}
+        </button>
+        <span className="text-xs text-[var(--muted-2)]">
           {timeAgo(article.publishedAt)}
         </span>
       </div>

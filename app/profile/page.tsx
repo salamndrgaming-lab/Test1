@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useProfile, MEMBERSHIP_LABEL, isProMembership } from "@/lib/useProfile";
 import { PageHeader, Card } from "@/components/ui";
 import { SignIn } from "@/components/auth/SignIn";
+import { ProGate } from "@/components/UpgradeCard";
+import { MyNewsBias } from "@/components/profile/MyNewsBias";
 import { accentVars } from "@/lib/sections";
 import { classNames } from "@/lib/format";
 
@@ -81,6 +83,16 @@ export default function ProfilePage() {
             {isPro ? "Manage membership" : "Upgrade to Pro"}
           </Link>
         </div>
+      </Card>
+
+      <Card className="mt-4">
+        <h3 className="mb-1 font-semibold">My News Bias</h3>
+        <p className="mb-3 text-xs text-[var(--muted)]">
+          A mirror of your own reading — are you seeing every side?
+        </p>
+        <ProGate isPro={isPro} feature="My News Bias report" compact>
+          <MyNewsBias />
+        </ProGate>
       </Card>
 
       <div className="mt-4">

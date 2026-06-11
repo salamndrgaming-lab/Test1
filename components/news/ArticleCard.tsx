@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable @next/next/no-img-element -- external thumbnails/favicons; plain img avoids next/image remote-cost + hotlink issues */
 
 import type { Article } from "@/types";
 import { BiasBadge } from "@/components/ui";
@@ -23,6 +24,10 @@ function SentimentDot({ score }: { score: number }) {
   );
 }
 
+const hideOnError = (e: React.SyntheticEvent<HTMLImageElement>) => {
+  e.currentTarget.style.display = "none";
+};
+
 export function ArticleCard({
   article,
   compact = false,
@@ -33,12 +38,13 @@ export function ArticleCard({
   const { isBookmarked, toggleBookmark, recordRead } = useLibrary();
   const { isPro } = usePro();
   const saved = isBookmarked(article.id);
+  const favicon = `https://www.google.com/s2/favicons?domain=${article.sourceDomain}&sz=64`;
+  const thumbSize = compact ? "h-12 w-12" : "h-[4.25rem] w-[4.25rem]";
 
   const onBookmark = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const result = toggleBookmark(article, isPro);
-    if (result === "blocked") {
+    if (toggleBookmark(article, isPro) === "blocked") {
       window.location.href = "/upgrade";
     }
   };
@@ -53,6 +59,15 @@ export function ArticleCard({
     >
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <BiasBadge lean={article.bias} />
+        <img
+          src={favicon}
+          alt=""
+          width={16}
+          height={16}
+          loading="lazy"
+          onError={hideOnError}
+          className="h-4 w-4 rounded-sm"
+        />
         <span className="text-xs font-medium text-[var(--muted)]">
           {article.source}
         </span>
@@ -73,19 +88,37 @@ export function ArticleCard({
           {timeAgo(article.publishedAt)}
         </span>
       </div>
-      <h3
-        className={classNames(
-          "font-serif font-medium leading-snug tracking-tight text-[var(--text)] transition-colors group-hover:text-[var(--accent)]",
-          compact ? "text-[0.95rem]" : "text-[1.05rem]",
+
+      <div className="flex gap-3">
+        <div className="min-w-0 flex-1">
+          <h3
+            className={classNames(
+              "font-serif font-medium leading-snug tracking-tight text-[var(--text)] transition-colors group-hover:text-[var(--accent)]",
+              compact ? "text-[0.95rem]" : "text-[1.05rem]",
+            )}
+          >
+            {article.title}
+          </h3>
+          {!compact && (
+            <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-[var(--muted)]">
+              {article.summary}
+            </p>
+          )}
+        </div>
+        {article.imageUrl && (
+          <img
+            src={article.imageUrl}
+            alt=""
+            loading="lazy"
+            onError={hideOnError}
+            className={classNames(
+              "shrink-0 rounded-lg object-cover",
+              thumbSize,
+            )}
+          />
         )}
-      >
-        {article.title}
-      </h3>
-      {!compact && (
-        <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-[var(--muted)]">
-          {article.summary}
-        </p>
-      )}
+      </div>
+
       <div className="mt-3 flex items-center gap-1.5 text-[0.6rem] font-medium uppercase tracking-wider text-[var(--muted-2)]">
         <span className="rounded-md bg-[var(--surface-2)] px-1.5 py-0.5">
           {article.category}

@@ -16,6 +16,36 @@ export interface RssItem {
   pubDate?: string;
   source?: string;
   sourceUrl?: string;
+  image?: string;
+}
+
+function firstUrlAttr(node: unknown): string | undefined {
+  if (!node) return undefined;
+  const pick = (n: unknown) => (n as Record<string, string>)?.["@_url"];
+  if (Array.isArray(node)) {
+    for (const n of node) {
+      const u = pick(n);
+      if (u) return u;
+    }
+    return undefined;
+  }
+  return pick(node);
+}
+
+/** Pull a story image from common RSS image fields or an <img> in the body. */
+function extractImage(
+  it: Record<string, unknown>,
+  decodedDescription: string,
+): string | undefined {
+  const media =
+    firstUrlAttr(it["media:content"]) ?? firstUrlAttr(it["media:thumbnail"]);
+  if (media) return media;
+  const enc = it.enclosure as Record<string, string> | undefined;
+  if (enc?.["@_url"] && (enc["@_type"] ?? "").startsWith("image")) {
+    return enc["@_url"];
+  }
+  const m = decodedDescription.match(/<img[^>]+src=["']([^"']+)["']/i);
+  return m?.[1];
 }
 
 const NAMED: Record<string, string> = {
@@ -71,15 +101,16 @@ export function parseRss(xml: string): RssItem[] {
     const source = it.source as
       | { "#text"?: string; "@_url"?: string }
       | undefined;
+    const rawDesc = String(it.description ?? it.summary ?? it.content ?? "");
+    const decodedDesc = decodeEntities(rawDesc);
     return {
       title: stripHtml(String(it.title ?? "")),
       link: String(link ?? ""),
-      description: stripHtml(
-        String(it.description ?? it.summary ?? it.content ?? ""),
-      ),
+      description: stripHtml(rawDesc),
       pubDate: String(it.pubDate ?? it.published ?? it.updated ?? ""),
       source: source?.["#text"] ? decodeEntities(source["#text"]) : undefined,
       sourceUrl: source?.["@_url"],
+      image: extractImage(it, decodedDesc),
     };
   });
 }

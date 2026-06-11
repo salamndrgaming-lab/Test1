@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useProfile, MEMBERSHIP_LABEL, isProMembership } from "@/lib/useProfile";
+import { usePro } from "@/lib/usePro";
 import { PageHeader, Card } from "@/components/ui";
 import { SignIn } from "@/components/auth/SignIn";
 import { ProGate } from "@/components/UpgradeCard";
@@ -31,6 +32,7 @@ function MembershipBadge({ status }: { status: string }) {
 
 export default function ProfilePage() {
   const { profile, update } = useProfile();
+  const { setIsPro } = usePro();
   const [name, setName] = useState(profile.displayName);
   const initial = (profile.displayName || "?").charAt(0).toUpperCase();
   const isPro = isProMembership(profile.membership);
@@ -82,6 +84,23 @@ export default function ProfilePage() {
           >
             {isPro ? "Manage membership" : "Upgrade to Pro"}
           </Link>
+        </div>
+      </Card>
+
+      <Card className="mt-4 border-amber-500/30 bg-amber-500/5">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="font-semibold">🧪 Test Pro mode</p>
+            <p className="text-xs text-[var(--muted)]">
+              Temporary — preview all Pro features. Remove before launch.
+            </p>
+          </div>
+          <button
+            onClick={() => setIsPro(!isPro)}
+            className={classNames(isPro ? "btn-primary" : "chip", "shrink-0")}
+          >
+            {isPro ? "Pro is ON" : "Turn on Pro"}
+          </button>
         </div>
       </Card>
 

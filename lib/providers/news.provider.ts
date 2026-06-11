@@ -95,6 +95,7 @@ export const newsProvider: DataProvider<NewsParams, Article[]> = {
           title,
           summary,
           url: it.link, // Google News link redirects to the original source
+          imageUrl: it.image,
           source: sourceName,
           sourceDomain,
           publishedAt: it.pubDate

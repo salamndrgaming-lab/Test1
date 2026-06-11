@@ -17,16 +17,20 @@ strategy lives in the plan file; this is the operational checklist.
 
 ## ⏳ To go live (needs your accounts + keys → set in `.env`)
 
-### 1. Stripe (Pro billing)
-1. Create products/prices (monthly + annual); copy price IDs.
-2. Set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_MONTHLY`,
-   `STRIPE_PRICE_ANNUAL`, `NEXT_PUBLIC_APP_URL`.
-3. Add `npm i stripe`, then implement:
-   - `app/api/checkout/route.ts` → create a Checkout Session, return `{ url }`
-     (the `/upgrade` page already POSTs here and redirects).
-   - `app/api/stripe/webhook/route.ts` → on `checkout.session.completed` /
-     subscription updates, set the user's `is_pro` in Supabase.
-4. Point a Stripe webhook at `/api/stripe/webhook`.
+### 1. Stripe (Pro billing) — CODE BUILT, just add keys
+The routes already exist: `app/api/checkout/route.ts` (the `/upgrade` button
+POSTs here → redirects to Checkout, 7-day trial), `app/api/stripe/webhook/route.ts`
+(sets `profiles.membership` from subscription status), and `app/api/portal/route.ts`
+(manage/cancel). To go live:
+1. Create monthly + annual recurring **prices**; copy the price IDs.
+2. Set `STRIPE_SECRET_KEY`, `STRIPE_PRICE_MONTHLY`, `STRIPE_PRICE_ANNUAL`,
+   `NEXT_PUBLIC_APP_URL`, and `STRIPE_WEBHOOK_SECRET`.
+3. Add a Stripe webhook → `https://yourdomain/api/stripe/webhook` (events:
+   `checkout.session.completed`, `customer.subscription.updated/deleted`).
+4. **Link customers → profiles:** pass the signed-in Supabase `userId` (and
+   `email`) in the checkout POST body so the webhook stamps
+   `profiles.stripe_customer_id` and flips `membership`. (Requires Supabase auth
+   from step 2 below.) Until then checkout works but entitlement stays local.
 
 ### 2. Supabase (accounts + entitlement source of truth) — scaffolded
 Profiles + membership already work **local-first** (`lib/useProfile.ts`,

@@ -43,6 +43,14 @@ export interface Article {
   geo?: { lat: number; lon: number; place: string };
 }
 
+export interface ArticleSynopsis {
+  title: string;
+  synopsis: string;
+  image?: string;
+  url: string; // resolved publisher URL
+  siteName?: string;
+}
+
 // ---------- Sports ----------
 
 export type League = "NFL" | "NBA" | "MLB" | "NHL" | "NCAAF" | "NCAAB";

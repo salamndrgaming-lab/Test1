@@ -7,6 +7,7 @@ import { timeAgo, classNames } from "@/lib/format";
 import { sentimentLabel } from "@/lib/sentiment";
 import { useLibrary } from "@/lib/useLibrary";
 import { usePro } from "@/lib/usePro";
+import { useArticleModal } from "@/components/ArticleModalProvider";
 
 function SentimentDot({ score }: { score: number }) {
   const label = sentimentLabel(score);
@@ -35,8 +36,9 @@ export function ArticleCard({
   article: Article;
   compact?: boolean;
 }) {
-  const { isBookmarked, toggleBookmark, recordRead } = useLibrary();
+  const { isBookmarked, toggleBookmark } = useLibrary();
   const { isPro } = usePro();
+  const { open } = useArticleModal();
   const saved = isBookmarked(article.id);
   const favicon = `https://www.google.com/s2/favicons?domain=${article.sourceDomain}&sz=64`;
   const thumbSize = compact ? "h-12 w-12" : "h-[4.25rem] w-[4.25rem]";
@@ -49,12 +51,19 @@ export function ArticleCard({
     }
   };
 
+  // open the in-app synopsis; let modified clicks open the publisher directly
+  const onCardClick = (e: React.MouseEvent) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
+    e.preventDefault();
+    open(article);
+  };
+
   return (
     <a
       href={article.url}
       target="_blank"
       rel="noopener noreferrer"
-      onClick={() => recordRead(article)}
+      onClick={onCardClick}
       className="card card-hover group block"
     >
       <div className="mb-2 flex flex-wrap items-center gap-2">

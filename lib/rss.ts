@@ -57,7 +57,7 @@ const NAMED: Record<string, string> = {
   nbsp: " ",
 };
 
-function decodeEntities(s: string): string {
+export function decodeEntities(s: string): string {
   return s.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m, code: string) => {
     if (code[0] === "#") {
       const num =

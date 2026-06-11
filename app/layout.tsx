@@ -4,6 +4,7 @@ import "./globals.css";
 import { NavTabs } from "@/components/layout/NavTabs";
 import { Footer } from "@/components/layout/Footer";
 import { SettingsProvider } from "@/components/SettingsProvider";
+import { ArticleModalProvider } from "@/components/ArticleModalProvider";
 import { ConsentBanner } from "@/components/ConsentBanner";
 
 const adsenseClient = process.env.NEXT_PUBLIC_ADSENSE_CLIENT;
@@ -51,10 +52,14 @@ export default function RootLayout({
       </head>
       <body>
         <SettingsProvider>
-          <NavTabs />
-          <main className="mx-auto max-w-5xl px-4 pt-5 md:pt-6">{children}</main>
-          <Footer />
-          <ConsentBanner />
+          <ArticleModalProvider>
+            <NavTabs />
+            <main className="mx-auto max-w-5xl px-4 pt-5 md:pt-6">
+              {children}
+            </main>
+            <Footer />
+            <ConsentBanner />
+          </ArticleModalProvider>
         </SettingsProvider>
       </body>
     </html>

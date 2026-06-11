@@ -17,6 +17,7 @@ import { OddsTable } from "@/components/sports/OddsTable";
 import { OddsBarChart } from "@/components/charts/OddsBarChart";
 import { SgpBuilder } from "@/components/sports/SgpBuilder";
 import { StandingsTable } from "@/components/sports/StandingsTable";
+import { AgeGate } from "@/components/AgeGate";
 import { classNames } from "@/lib/format";
 import { accentVars } from "@/lib/sections";
 
@@ -75,6 +76,7 @@ export default function SportsPage() {
         right={source && <SourceBadge source={source.source} note={source.error} />}
       />
 
+      <AgeGate>
       <DisclaimerBanner />
 
       <div className="no-scrollbar -mx-4 my-4 flex gap-2 overflow-x-auto px-4">
@@ -211,6 +213,7 @@ export default function SportsPage() {
           )}
         </>
       )}
+      </AgeGate>
     </div>
   );
 }

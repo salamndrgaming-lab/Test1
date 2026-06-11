@@ -20,6 +20,8 @@ import {
   toMarketSymbol,
 } from "@/lib/markets";
 import type { MarketSymbol } from "@/lib/providers/quotes";
+import { usePro } from "@/lib/usePro";
+import { UpgradeCard } from "@/components/UpgradeCard";
 import { classNames } from "@/lib/format";
 import { accentVars } from "@/lib/sections";
 
@@ -49,6 +51,7 @@ function QuoteGrid({ symbols }: { symbols: MarketSymbol[] }) {
 }
 
 function StocksTab() {
+  const { isPro } = usePro();
   const [watchlist, setWatchlist] = usePersistentState<string[]>(
     "newsscope.watchlist",
     [],
@@ -56,14 +59,14 @@ function StocksTab() {
   const [input, setInput] = useState("");
 
   const symbols = useMemo(() => {
-    const custom = watchlist.map(toMarketSymbol);
+    const custom = isPro ? watchlist.map(toMarketSymbol) : [];
     const seen = new Set<string>();
     return [...DEFAULT_STOCKS, ...custom].filter((s) => {
       if (seen.has(s.symbol)) return false;
       seen.add(s.symbol);
       return true;
     });
-  }, [watchlist]);
+  }, [watchlist, isPro]);
 
   const add = (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,30 +77,36 @@ function StocksTab() {
 
   return (
     <div className="space-y-3">
-      <form onSubmit={add} className="flex gap-2">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Add a ticker (e.g. AAPL)…"
-          className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm uppercase"
-        />
-        <button type="submit" className="btn-primary">
-          Add
-        </button>
-      </form>
-      {watchlist.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {watchlist.map((t) => (
-            <button
-              key={t}
-              onClick={() => setWatchlist((w) => w.filter((x) => x !== t))}
-              className="chip text-xs"
-              title="Remove"
-            >
-              {t} ✕
+      {isPro ? (
+        <>
+          <form onSubmit={add} className="flex gap-2">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Add a ticker (e.g. AAPL)…"
+              className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm uppercase"
+            />
+            <button type="submit" className="btn-primary">
+              Add
             </button>
-          ))}
-        </div>
+          </form>
+          {watchlist.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {watchlist.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setWatchlist((w) => w.filter((x) => x !== t))}
+                  className="chip text-xs"
+                  title="Remove"
+                >
+                  {t} ✕
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <UpgradeCard feature="Custom stock watchlists" compact />
       )}
       <QuoteGrid symbols={symbols} />
     </div>

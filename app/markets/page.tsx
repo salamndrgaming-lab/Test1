@@ -17,9 +17,9 @@ import {
   DEFAULT_ETFS,
   DEFAULT_STOCKS,
   encodeSymbols,
-  toStooqSymbol,
+  toMarketSymbol,
 } from "@/lib/markets";
-import type { StooqSymbol } from "@/lib/providers/stooq";
+import type { MarketSymbol } from "@/lib/providers/quotes";
 import { classNames } from "@/lib/format";
 import { accentVars } from "@/lib/sections";
 
@@ -32,7 +32,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "analysis", label: "Analysis" },
 ];
 
-function QuoteGrid({ symbols }: { symbols: StooqSymbol[] }) {
+function QuoteGrid({ symbols }: { symbols: MarketSymbol[] }) {
   const url = `/api/markets/quote?symbols=${encodeURIComponent(encodeSymbols(symbols))}`;
   const { data, loading, error, refetch } = useProvider<Quote[]>(url);
   if (loading) return <Spinner label="Loading quotes…" />;
@@ -56,11 +56,11 @@ function StocksTab() {
   const [input, setInput] = useState("");
 
   const symbols = useMemo(() => {
-    const custom = watchlist.map(toStooqSymbol);
+    const custom = watchlist.map(toMarketSymbol);
     const seen = new Set<string>();
     return [...DEFAULT_STOCKS, ...custom].filter((s) => {
-      if (seen.has(s.stooq)) return false;
-      seen.add(s.stooq);
+      if (seen.has(s.symbol)) return false;
+      seen.add(s.symbol);
       return true;
     });
   }, [watchlist]);

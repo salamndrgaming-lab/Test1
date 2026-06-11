@@ -1,18 +1,12 @@
 import type { Quote } from "@/types";
 import { type DataProvider } from "./withFallback";
-import { fetchStooqQuotes, type StooqSymbol } from "./stooq";
+import { fetchQuotes } from "./quotes";
+import { INDICES } from "@/lib/markets";
 
 export type StocksParams = Record<string, never>;
 
-const INDICES: StooqSymbol[] = [
-  { stooq: "^spx", name: "S&P 500" },
-  { stooq: "^dji", name: "Dow Jones" },
-  { stooq: "^ndq", name: "Nasdaq" },
-  { stooq: "^vix", name: "VIX" },
-];
-
-// Major indices via Stooq (keyless CSV, server-side only).
+// Major indices via Yahoo Finance (keyless chart endpoint, server-side).
 export const stocksProvider: DataProvider<StocksParams, Quote[]> = {
-  name: "Stooq",
-  fetchLive: (_params, signal) => fetchStooqQuotes(INDICES, signal),
+  name: "Yahoo Finance",
+  fetchLive: (_params, signal) => fetchQuotes(INDICES, signal),
 };

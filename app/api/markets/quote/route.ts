@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getLive } from "@/lib/providers/withFallback";
-import { stooqQuoteProvider } from "@/lib/providers/stooq";
+import { quoteProvider } from "@/lib/providers/quotes";
 import { decodeSymbols } from "@/lib/markets";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +16,6 @@ export async function GET(req: NextRequest) {
       fetchedAt: new Date().toISOString(),
     });
   }
-  const result = await getLive(stooqQuoteProvider, { symbols });
+  const result = await getLive(quoteProvider, { symbols });
   return NextResponse.json(result);
 }

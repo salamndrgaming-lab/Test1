@@ -1,47 +1,54 @@
-import type { StooqSymbol } from "@/lib/providers/stooq";
+import type { MarketSymbol } from "@/lib/providers/quotes";
 
 // Curated default lists (client-usable). Users can add their own tickers too.
-export const DEFAULT_STOCKS: StooqSymbol[] = [
-  { stooq: "aapl.us", name: "Apple" },
-  { stooq: "msft.us", name: "Microsoft" },
-  { stooq: "nvda.us", name: "NVIDIA" },
-  { stooq: "amzn.us", name: "Amazon" },
-  { stooq: "googl.us", name: "Alphabet" },
-  { stooq: "meta.us", name: "Meta" },
-  { stooq: "tsla.us", name: "Tesla" },
-  { stooq: "jpm.us", name: "JPMorgan" },
+// Yahoo Finance symbols (^ for indices; plain tickers for equities/ETFs).
+export const DEFAULT_STOCKS: MarketSymbol[] = [
+  { symbol: "AAPL", name: "Apple" },
+  { symbol: "MSFT", name: "Microsoft" },
+  { symbol: "NVDA", name: "NVIDIA" },
+  { symbol: "AMZN", name: "Amazon" },
+  { symbol: "GOOGL", name: "Alphabet" },
+  { symbol: "META", name: "Meta" },
+  { symbol: "TSLA", name: "Tesla" },
+  { symbol: "JPM", name: "JPMorgan" },
 ];
 
-export const DEFAULT_ETFS: StooqSymbol[] = [
-  { stooq: "spy.us", name: "SPDR S&P 500" },
-  { stooq: "qqq.us", name: "Invesco QQQ" },
-  { stooq: "vti.us", name: "Vanguard Total Mkt" },
-  { stooq: "iwm.us", name: "iShares Russell 2000" },
-  { stooq: "dia.us", name: "SPDR Dow Jones" },
-  { stooq: "gld.us", name: "SPDR Gold" },
-  { stooq: "vxus.us", name: "Vanguard Intl" },
-  { stooq: "arkk.us", name: "ARK Innovation" },
+export const DEFAULT_ETFS: MarketSymbol[] = [
+  { symbol: "SPY", name: "SPDR S&P 500" },
+  { symbol: "QQQ", name: "Invesco QQQ" },
+  { symbol: "VTI", name: "Vanguard Total Mkt" },
+  { symbol: "IWM", name: "iShares Russell 2000" },
+  { symbol: "DIA", name: "SPDR Dow Jones" },
+  { symbol: "GLD", name: "SPDR Gold" },
+  { symbol: "VXUS", name: "Vanguard Intl" },
+  { symbol: "ARKK", name: "ARK Innovation" },
 ];
 
-/** Turn a user-typed ticker into a Stooq US symbol. */
-export function toStooqSymbol(ticker: string): StooqSymbol {
-  const t = ticker.trim().toLowerCase().replace(/[^a-z0-9.]/g, "");
-  const stooq = t.includes(".") ? t : `${t}.us`;
-  return { stooq, name: ticker.trim().toUpperCase() };
+export const INDICES: MarketSymbol[] = [
+  { symbol: "^GSPC", name: "S&P 500" },
+  { symbol: "^DJI", name: "Dow Jones" },
+  { symbol: "^IXIC", name: "Nasdaq" },
+  { symbol: "^VIX", name: "VIX" },
+];
+
+/** Turn a user-typed ticker into a market symbol. */
+export function toMarketSymbol(ticker: string): MarketSymbol {
+  const t = ticker.trim().toUpperCase().replace(/[^A-Z0-9.^-]/g, "");
+  return { symbol: t, name: t };
 }
 
 /** Encode a symbol list for the /api/markets/quote route. */
-export function encodeSymbols(symbols: StooqSymbol[]): string {
-  return symbols.map((s) => `${s.stooq}|${s.name}`).join(",");
+export function encodeSymbols(symbols: MarketSymbol[]): string {
+  return symbols.map((s) => `${s.symbol}|${s.name}`).join(",");
 }
 
-export function decodeSymbols(param: string): StooqSymbol[] {
+export function decodeSymbols(param: string): MarketSymbol[] {
   return param
     .split(",")
     .map((p) => p.trim())
     .filter(Boolean)
     .map((p) => {
-      const [stooq, name] = p.split("|");
-      return { stooq, name: name || stooq.replace(/\.us$/i, "").toUpperCase() };
+      const [symbol, name] = p.split("|");
+      return { symbol, name: name || symbol };
     });
 }

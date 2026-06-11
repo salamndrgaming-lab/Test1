@@ -12,17 +12,46 @@ const adsenseClient = process.env.NEXT_PUBLIC_ADSENSE_CLIENT;
 // Applies saved theme / text-scale / reduce-motion before first paint (no FOUC).
 const themeInit = `(function(){try{var s=JSON.parse(localStorage.getItem('newsscope.settings')||'{}');var r=document.documentElement;r.dataset.theme=s.theme||'dark';if(s.textScale)r.style.setProperty('--text-scale',String(s.textScale));if(s.reduceMotion)r.dataset.reduceMotion='true';}catch(e){document.documentElement.dataset.theme='dark';}})();`;
 
+const siteUrl = process.env.NEXT_PUBLIC_APP_URL || "https://newsscope.example";
+
 export const metadata: Metadata = {
-  title: "NewsScope — News, Visualized",
+  metadataBase: new URL(siteUrl),
+  title: {
+    default: "NewsScope — See Every Side of the News",
+    template: "%s — NewsScope",
+  },
   description:
-    "Local-to-national news aggregation with bias sorting, a Good News tab, sports odds research, weather, and entertainment.",
+    "A bias-aware news briefing: compare how Left, Center, and Right cover the same story, plus local news, markets, weather, and sports in one place.",
   applicationName: "NewsScope",
+  keywords: [
+    "bias-aware news",
+    "media bias",
+    "news comparison",
+    "blindspot",
+    "balanced news",
+    "news aggregator",
+    "left center right news",
+  ],
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
     title: "NewsScope",
   },
   icons: { icon: "/icon.svg", apple: "/icon.svg" },
+  openGraph: {
+    type: "website",
+    siteName: "NewsScope",
+    title: "NewsScope — See Every Side of the News",
+    description:
+      "Compare how Left, Center, and Right cover the same story — plus markets, weather, and sports.",
+    url: siteUrl,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "NewsScope — See Every Side of the News",
+    description:
+      "Compare how Left, Center, and Right cover the same story — plus markets, weather, and sports.",
+  },
 };
 
 export const viewport: Viewport = {

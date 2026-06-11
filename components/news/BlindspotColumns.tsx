@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { Article } from "@/types";
+import Link from "next/link";
 import { useProvider } from "@/lib/useProvider";
 import { useFollows } from "@/lib/useFollows";
 import { ArticleCard } from "@/components/news/ArticleCard";
@@ -11,6 +12,7 @@ import {
   COLUMN_LABEL,
   blindspotFlags,
   groupByLean,
+  slugify,
   type LeanColumn,
 } from "@/lib/blindspot";
 
@@ -61,6 +63,15 @@ export function BlindspotColumns() {
           >
             {isFollowing(followable) ? "★ Following" : "☆ Follow"}
           </button>
+        )}
+        {submitted.trim() && (
+          <Link
+            href={`/story/${slugify(submitted)}`}
+            className="chip text-xs"
+            title="Public shareable page"
+          >
+            ↗ Share
+          </Link>
         )}
       </form>
 

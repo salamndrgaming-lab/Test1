@@ -2,6 +2,7 @@ import Link from "next/link";
 import { NewsletterSignup } from "@/components/NewsletterSignup";
 
 const LINKS = [
+  ["/about", "About"],
   ["/upgrade", "Go Pro"],
   ["/legal/terms", "Terms"],
   ["/legal/privacy", "Privacy"],

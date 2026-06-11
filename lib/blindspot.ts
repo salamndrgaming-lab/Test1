@@ -60,3 +60,17 @@ export function blindspotFlags(
     right: flag(groups.right.length),
   };
 }
+
+/** topic ⇄ URL slug for shareable /story/[slug] pages. */
+export function slugify(topic: string): string {
+  return topic
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
+export function deslug(slug: string): string {
+  return decodeURIComponent(slug).replace(/-+/g, " ").trim();
+}

@@ -99,6 +99,22 @@ export default function ProfilePage() {
         <SignIn />
       </div>
 
+      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {[
+          ["/briefing", "Briefing", "Your daily digest"],
+          ["/following", "Following", "Story timelines"],
+          ["/saved", "Saved", "Bookmarks & history"],
+          ["/alerts", "Alerts", "Smart notifications"],
+        ].map(([href, label, desc]) => (
+          <Link key={href} href={href} className="card card-hover text-center">
+            <p className="font-serif text-base font-medium text-[var(--text)]">
+              {label}
+            </p>
+            <p className="text-xs text-[var(--muted)]">{desc}</p>
+          </Link>
+        ))}
+      </div>
+
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
         <Card>
           <h3 className="mb-2 font-semibold">Following</h3>

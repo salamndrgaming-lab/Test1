@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { Article } from "@/types";
 import { useProvider } from "@/lib/useProvider";
+import { useFollows } from "@/lib/useFollows";
 import { ArticleCard } from "@/components/news/ArticleCard";
 import { CoverageSpread } from "@/components/charts/CoverageSpread";
 import { Spinner, ErrorState } from "@/components/ui";
@@ -26,6 +27,8 @@ export function BlindspotColumns() {
     ? `/api/blindspot?topic=${encodeURIComponent(submitted)}`
     : "/api/blindspot";
   const { data, loading, error, refetch } = useProvider<Article[]>(url);
+  const { isFollowing, toggleFollow } = useFollows();
+  const followable = submitted.trim() || topic.trim();
 
   const groups = useMemo(() => groupByLean(data ?? []), [data]);
   const flags = useMemo(() => blindspotFlags(groups), [groups]);
@@ -49,6 +52,16 @@ export function BlindspotColumns() {
         <button type="submit" className="btn-primary">
           Compare
         </button>
+        {followable && (
+          <button
+            type="button"
+            onClick={() => toggleFollow(followable)}
+            className="chip text-xs"
+            title="Follow this story"
+          >
+            {isFollowing(followable) ? "★ Following" : "☆ Follow"}
+          </button>
+        )}
       </form>
 
       {loading && <Spinner label="Comparing coverage…" />}

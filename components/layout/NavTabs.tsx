@@ -13,6 +13,7 @@ type IconName =
   | "bias"
   | "ent"
   | "markets"
+  | "profile"
   | "settings";
 
 interface Tab {
@@ -30,6 +31,7 @@ const TABS: Tab[] = [
   { href: "/markets", label: "Markets", icon: "markets" },
   { href: "/bias", label: "Bias", icon: "bias" },
   { href: "/entertainment", label: "Ent.", icon: "ent" },
+  { href: "/profile", label: "Profile", icon: "profile" },
   { href: "/settings", label: "Settings", icon: "settings" },
 ];
 
@@ -99,6 +101,13 @@ function Icon({ name, className }: { name: IconName; className?: string }) {
           <path d="M4 16l4-5 3 3 5-7" />
           <path d="M14 7h3v3" />
           <path d="M3 21h18" />
+        </svg>
+      );
+    case "profile":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="8" r="4" />
+          <path d="M4 20a8 8 0 0 1 16 0" />
         </svg>
       );
     case "settings":

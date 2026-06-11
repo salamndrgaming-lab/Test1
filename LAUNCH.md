@@ -28,13 +28,23 @@ strategy lives in the plan file; this is the operational checklist.
      subscription updates, set the user's `is_pro` in Supabase.
 4. Point a Stripe webhook at `/api/stripe/webhook`.
 
-### 2. Supabase (accounts + entitlement source of truth)
-1. Create a project; set the `NEXT_PUBLIC_SUPABASE_*` + service-role keys.
-2. Tables: `profiles(id, email, is_pro, stripe_customer_id, created_at)`,
-   `preferences(user_id, json)`.
-3. Add sign-in (magic link / OAuth); on auth, sync `localStorage`
-   (`SettingsProvider`, watchlist, favorites) ↔ `preferences`.
-4. Replace `usePro()`'s local flag with the server-verified `is_pro`.
+### 2. Supabase (accounts + entitlement source of truth) — scaffolded
+Profiles + membership already work **local-first** (`lib/useProfile.ts`,
+`/profile`). To make them real accounts:
+1. Create a project; set `NEXT_PUBLIC_SUPABASE_URL`,
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`.
+2. Run **`supabase/schema.sql`** in the SQL editor (creates `profiles`,
+   `preferences`, `bookmarks`, `history`, `follows`, `alerts` with RLS + a
+   signup trigger that auto-creates a profile row).
+3. The magic-link sign-in (`components/auth/SignIn.tsx`) appears automatically
+   once the env vars are set; on auth, sync the local stores
+   (`useProfile`/`useLibrary`/settings) ↔ Supabase.
+4. Replace `useMembership()`'s local value with the server-verified
+   `profiles.membership` (`lib/supabase/server.ts → getMembership`).
+
+**Tracking members:** query the `profiles` table (or the Supabase dashboard) —
+`membership` is the status column; the **Stripe webhook** sets it to
+`trialing`/`pro`/`past_due`/`canceled`. That's your member roster + MRR source.
 
 ### 3. Resend (newsletter)
 - Set `RESEND_API_KEY` + `RESEND_AUDIENCE_ID`; `/api/subscribe` will persist

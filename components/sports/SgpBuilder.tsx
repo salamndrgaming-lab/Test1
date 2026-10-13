@@ -6,7 +6,7 @@ import { PickCard } from "./PickCard";
 import { DisclaimerBanner } from "@/components/layout/DisclaimerBanner";
 import { calculatePayout } from "@/lib/sgp";
 import { LegEdgeChart, ParlayGrowthChart } from "./SgpCharts";
-import { formatMoney, formatOdds, formatPct } from "@/lib/format";
+import { formatMoney, formatOdds, formatPct, classNames } from "@/lib/format";
 
 // Interactive research slip: toggle legs, set a stake, see combined odds and an
 // estimated payout. Framed strictly as research/education.
@@ -88,26 +88,96 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
           </div>
         </div>
         {payout && (
-          <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-            <div className="rounded-lg bg-[var(--surface)] p-2">
-              <p className="text-xs text-[var(--muted)]">Est. payout</p>
-              <p className="text-lg font-bold text-good tabular-nums">
-                {formatMoney(payout.payout)}
-              </p>
+          <>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+              <div className="rounded-lg bg-[var(--surface)] p-2">
+                <p className="text-xs text-[var(--muted)]">Est. payout</p>
+                <p className="text-lg font-bold text-good tabular-nums">
+                  {formatMoney(payout.payout)}
+                </p>
+              </div>
+              <div className="rounded-lg bg-[var(--surface)] p-2">
+                <p className="text-xs text-[var(--muted)]">Est. profit</p>
+                <p className="text-lg font-bold tabular-nums">
+                  {formatMoney(payout.profit)}
+                </p>
+              </div>
             </div>
-            <div className="rounded-lg bg-[var(--surface)] p-2">
-              <p className="text-xs text-[var(--muted)]">Est. profit</p>
-              <p className="text-lg font-bold tabular-nums">
-                {formatMoney(payout.profit)}
-              </p>
+
+            <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
+              <div
+                className="rounded-lg bg-[var(--surface)] p-2"
+                title="Our correlation-adjusted probability that every leg wins"
+              >
+                <p className="text-xs text-[var(--muted)]">Model win chance</p>
+                <p className="text-lg font-bold tabular-nums">
+                  {formatPct(payout.modelProbability)}
+                </p>
+                {payout.correlated && (
+                  <p className="text-[0.6rem] text-[var(--muted-2)]">
+                    naive {formatPct(payout.naiveProbability)}
+                  </p>
+                )}
+              </div>
+              <div
+                className="rounded-lg bg-[var(--surface)] p-2"
+                title={
+                  payout.correlated
+                    ? "Theoretical only: correlated legs are priced here as if independent, which no sportsbook would offer"
+                    : "Expected profit or loss on this stake, at our model probability"
+                }
+              >
+                <p className="text-xs text-[var(--muted)]">
+                  {payout.correlated ? "Theoretical EV" : "Expected value"}
+                </p>
+                <p
+                  className={classNames(
+                    "text-lg font-bold tabular-nums",
+                    payout.correlated
+                      ? "text-amber-300"
+                      : payout.expectedValue >= 0
+                        ? "text-good"
+                        : "text-bad",
+                  )}
+                >
+                  {payout.expectedValue >= 0 ? "+" : ""}
+                  {formatMoney(payout.expectedValue)}
+                  {payout.correlated && "*"}
+                </p>
+              </div>
             </div>
-          </div>
+
+            {payout.correlated && (
+              <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[0.65rem] text-amber-200">
+                ⚠ This slip has multiple legs from the same game. Those outcomes
+                are <strong>correlated</strong>, so the real win chance is higher
+                than the naive product — and a sportsbook would price a true
+                same-game parlay well below the combined odds shown here.{" "}
+                <strong>
+                  *The EV above is therefore theoretical, not an obtainable edge.
+                </strong>
+              </p>
+            )}
+          </>
         )}
         <p className="mt-2 text-[0.65rem] text-[var(--muted)]">
           Estimated payout is illustrative math on the listed odds, not an offer.
           No outcome is guaranteed.
         </p>
       </div>
+
+      {rec.notes.length > 0 && (
+        <details className="card text-xs text-[var(--muted)]">
+          <summary className="cursor-pointer font-semibold text-[var(--text)]">
+            How this model works ({rec.modelVersion})
+          </summary>
+          <ul className="mt-2 list-disc space-y-1.5 pl-4">
+            {rec.notes.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ul>
+        </details>
+      )}
 
       {selectedLegs.length > 0 && (
         <div className="grid gap-3 md:grid-cols-2">

@@ -107,20 +107,56 @@ export interface SgpReference {
   url: string;
 }
 
+/** One component of a leg's confidence score (0..1), with why it scored that. */
+export interface SgpConfidenceFactor {
+  label: string;
+  value: number;
+  note: string;
+}
+
+/** Lets the slip compute exact same-game correlation from the margin model. */
+export interface SgpLegModelMeta {
+  kind: "margin" | "total";
+  side?: "home" | "away";
+  /** The team's margin must exceed this for the leg to win. */
+  threshold?: number;
+  blendedMargin?: number;
+  sigma?: number;
+}
+
 export interface SgpLeg {
   id: string;
   gameId: string;
   league: League;
   matchup: string; // "LAL @ BOS"
-  market: string; // "Player Points O/U", "Moneyline", "Spread"...
-  selection: string; // "Jayson Tatum Over 27.5 PTS"
+  market: string; // "Moneyline", "Spread", "Total"...
+  selection: string; // "Boston Celtics -4.5"
   americanOdds: number;
   rationale: string; // cited reasoning
   references: SgpReference[];
-  confidence: Confidence;
   supportingStats: { label: string; value: string }[];
-  /** model's estimated true probability 0..1, for edge display */
+
+  /** Our estimated true probability (0..1). */
   modelProbability: number;
+  /** The market's de-vigged probability — what the price says once the book's margin is removed. */
+  marketProbability: number;
+  /** Raw implied probability: the win rate needed just to break even at this price. */
+  breakEvenProbability: number;
+  /** Odds that would be fair at our model probability. */
+  fairAmericanOdds: number;
+  /** modelProbability - breakEvenProbability. Positive = +EV. */
+  edge: number;
+  /** Expected profit per $1 staked. */
+  expectedValue: number;
+  /** Kelly stake fraction (0 when there's no edge). */
+  kellyFraction: number;
+
+  confidence: Confidence;
+  /** 0..1 reliability of this estimate. */
+  confidenceScore: number;
+  confidenceFactors: SgpConfidenceFactor[];
+
+  modelMeta?: SgpLegModelMeta;
 }
 
 export interface SgpRecommendation {
@@ -129,8 +165,26 @@ export interface SgpRecommendation {
   legs: SgpLeg[]; // 6+
   combinedDecimalOdds: number;
   combinedAmericanOdds: number;
-  impliedProbability: number; // from combined odds
-  modelProbability: number; // product of leg model probs
+  /** Break-even probability implied by the combined price. */
+  impliedProbability: number;
+  /** Correlation-adjusted probability that every leg wins. */
+  modelProbability: number;
+  /** Naive product of leg probabilities (ignores same-game correlation). */
+  naiveProbability: number;
+  /** Fair price at our adjusted probability. */
+  fairAmericanOdds: number;
+  /** Expected profit per $1 staked on the slip. */
+  expectedValue: number;
+  /** True when the slip mixes legs from the same game. */
+  correlated: boolean;
+  /**
+   * True when the combined price isn't obtainable (correlated legs priced as
+   * independent), so expectedValue is illustrative rather than a real edge.
+   */
+  expectedValueIsTheoretical: boolean;
+  modelVersion: string;
+  /** Plain-language notes about the model and its caveats. */
+  notes: string[];
   disclaimer: string;
 }
 

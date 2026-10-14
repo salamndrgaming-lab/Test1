@@ -26,7 +26,8 @@ export interface PredictionRecord {
 
   // everything needed to grade it later
   kind: "margin" | "total";
-  side?: "home" | "away";
+  /** "home"/"away" for margin legs; "over"/"under" for totals. */
+  side?: "home" | "away" | "over" | "under";
   /** The team's margin must exceed this. */
   threshold?: number;
   totalLine?: number;
@@ -53,7 +54,7 @@ export function toPrediction(leg: SgpLeg): PredictionRecord | null {
   if (!meta) return null;
   const totalLine =
     meta.kind === "total"
-      ? Number(/([\d.]+)/.exec(leg.selection)?.[1] ?? NaN)
+      ? (meta.totalLine ?? Number(/([\d.]+)/.exec(leg.selection)?.[1] ?? NaN))
       : undefined;
   if (meta.kind === "total" && !Number.isFinite(totalLine)) return null;
 
@@ -87,8 +88,9 @@ export function gradePrediction(
 
   if (p.kind === "total") {
     const total = r.homeScore + r.awayScore;
-    if (total === p.totalLine) push = true;
-    won = total > (p.totalLine ?? 0); // selections are always "Over X"
+    const line = p.totalLine ?? 0;
+    if (total === line) push = true;
+    won = p.side === "under" ? total < line : total > line;
   } else {
     const t = p.threshold ?? 0;
     // "home" legs need homeMargin > t; "away" legs need awayMargin > t

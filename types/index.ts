@@ -88,6 +88,51 @@ export interface MarketOdds {
   underOdds?: number;
   favorite?: "home" | "away";
   details?: string; // raw "NYY -1.5"
+  /** How the price has moved since it opened. */
+  movement?: LineMovement;
+}
+
+/**
+ * Opening vs current prices. Line movement is the most useful public signal a
+ * keyless feed exposes: it aggregates every sharp bet placed since the market
+ * opened, so a line moving toward a side is independent confirmation of it.
+ */
+export interface LineMovement {
+  openSpread?: number; // home spread at open
+  currentSpread?: number;
+  openTotal?: number;
+  currentTotal?: number;
+  openHomeMoneyline?: number;
+  openAwayMoneyline?: number;
+  /** Points the home spread has moved; negative = money came in on home. */
+  spreadDelta?: number;
+  /** Points the total has moved; positive = money came in on the over. */
+  totalDelta?: number;
+  /** Change in the de-vigged home win probability since open, in points. */
+  homeProbDelta?: number;
+}
+
+/**
+ * How recently a team played. A second game on consecutive nights is a
+ * measurable disadvantage in basketball and hockey.
+ */
+export interface TeamRest {
+  teamId: string;
+  /** 1 = played last night (a back-to-back). Infinity = no recent game seen. */
+  daysSinceLastGame: number;
+  /** Games played in the window we looked at. */
+  gamesInWindow: number;
+}
+
+/** Season scoring rates for one team, used by the margin and totals models. */
+export interface TeamScoring {
+  teamId: string;
+  abbreviation: string;
+  gamesPlayed: number;
+  /** Points/goals/runs scored per game. */
+  pointsForPerGame: number;
+  /** Points/goals/runs conceded per game. */
+  pointsAgainstPerGame: number;
 }
 
 export interface Standing {
@@ -117,11 +162,16 @@ export interface SgpConfidenceFactor {
 /** Lets the slip compute exact same-game correlation from the margin model. */
 export interface SgpLegModelMeta {
   kind: "margin" | "total";
-  side?: "home" | "away";
+  /** "home"/"away" for margin legs; "over"/"under" for totals. */
+  side?: "home" | "away" | "over" | "under";
   /** The team's margin must exceed this for the leg to win. */
   threshold?: number;
   blendedMargin?: number;
   sigma?: number;
+  /** Totals: the posted line, and our projected total + its SD. */
+  totalLine?: number;
+  totalMean?: number;
+  totalSigma?: number;
 }
 
 export interface SgpLeg {
@@ -183,6 +233,8 @@ export interface SgpRecommendation {
    */
   expectedValueIsTheoretical: boolean;
   modelVersion: string;
+  /** Which inputs actually drove this slip, for an always-visible summary. */
+  inputs: { label: string; detail: string }[];
   /** Plain-language notes about the model and its caveats. */
   notes: string[];
   disclaimer: string;

@@ -2,7 +2,10 @@ import type {
   Confidence,
   Game,
   League,
+  LineMovement,
   MarketOdds,
+  TeamRest,
+  TeamScoring,
   SgpConfidenceFactor,
   SgpLeg,
   SgpLegModelMeta,
@@ -16,7 +19,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "margin-v2";
+export const MODEL_VERSION = "ratings-v3";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -166,9 +169,28 @@ export function log5(pA: number, pB: number): number {
  * 3. League parameters
  * ------------------------------------------------------------------ */
 
+/**
+ * Cost of playing on consecutive nights, in margin units, by league.
+ *
+ * Back-to-backs are a well-documented drag in basketball and hockey; football
+ * is weekly so the concept doesn't apply, and baseball plays most days, which
+ * is why its penalty is ~0 (it is the starting pitcher, not rest, that drives
+ * MLB — and this feed gives us no pitcher data, so we claim nothing).
+ */
+export const BACK_TO_BACK_PENALTY: Record<League, number> = {
+  NBA: 1.8,
+  NHL: 0.2,
+  NCAAB: 1.5,
+  MLB: 0,
+  NFL: 0,
+  NCAAF: 0,
+};
+
 export interface LeagueModel {
   /** SD of final margin, in the sport's own units. */
   marginSigma: number;
+  /** SD of the combined final total. */
+  totalSigma: number;
   /** Home advantage expressed in margin units. */
   homeEdge: number;
   /** Shrinkage constant: games needed before records carry real weight. */
@@ -177,20 +199,31 @@ export interface LeagueModel {
 }
 
 export const LEAGUE_MODEL: Record<League, LeagueModel> = {
-  NBA: { marginSigma: 12.0, homeEdge: 2.2, priorGames: 20, unit: "pts" },
-  NFL: { marginSigma: 13.2, homeEdge: 1.6, priorGames: 6, unit: "pts" },
-  NHL: { marginSigma: 2.3, homeEdge: 0.25, priorGames: 25, unit: "goals" },
-  MLB: { marginSigma: 4.2, homeEdge: 0.2, priorGames: 40, unit: "runs" },
-  NCAAF: { marginSigma: 16.5, homeEdge: 2.4, priorGames: 6, unit: "pts" },
-  NCAAB: { marginSigma: 11.0, homeEdge: 3.0, priorGames: 15, unit: "pts" },
+  NBA: { marginSigma: 12.0, totalSigma: 16.5, homeEdge: 2.2, priorGames: 20, unit: "pts" },
+  NFL: { marginSigma: 13.2, totalSigma: 13.5, homeEdge: 1.6, priorGames: 6, unit: "pts" },
+  NHL: { marginSigma: 2.3, totalSigma: 2.7, homeEdge: 0.25, priorGames: 25, unit: "goals" },
+  MLB: { marginSigma: 4.2, totalSigma: 4.4, homeEdge: 0.2, priorGames: 40, unit: "runs" },
+  NCAAF: { marginSigma: 16.5, totalSigma: 17.5, homeEdge: 2.4, priorGames: 6, unit: "pts" },
+  NCAAB: { marginSigma: 11.0, totalSigma: 15.0, homeEdge: 3.0, priorGames: 15, unit: "pts" },
 };
 
 /**
- * Hard cap on how much our record-based prior can move off the market.
- * Betting markets are highly efficient; a win%-only model deserves a minority
- * vote. Keeping this explicit (and low) is what stops the tool inventing edge.
+ * Hard cap on how much our scoring-rate model can move off the market.
+ * Betting markets are highly efficient; even a decent model deserves a
+ * minority vote. Keeping this explicit (and low) is what stops the tool
+ * inventing edge.
  */
 export const MAX_MODEL_WEIGHT = 0.35;
+
+/**
+ * A win%-only prior (no scoring data) is materially weaker than a points
+ * for/against one — two 10-6 teams can have opposite point differentials — so
+ * it gets a smaller vote.
+ */
+export const MAX_RECORD_WEIGHT = 0.2;
+
+/** Totals are the sharpest market of the three, so we lean on it hardest. */
+export const MAX_TOTAL_WEIGHT = 0.3;
 
 /**
  * Leagues whose spread is a true point spread priced at the standard -110.
@@ -235,26 +268,72 @@ export function parseRecord(record?: string): ParsedRecord | null {
 export interface GameModel {
   league: League;
   sigma: number;
+  /** SD of the combined total. */
+  totalSigma: number;
   /** Market's projected home margin (positive = home favoured). */
   marketMargin: number;
-  /** Our record-based projected home margin (null when records are missing). */
+  /** Our projected home margin (null when we have no inputs at all). */
   modelMargin: number | null;
   /** Final blended projection used for all legs in this game. */
   blendedMargin: number;
   /** Weight given to our model (0..MAX_MODEL_WEIGHT). */
   modelWeight: number;
+  /** Which inputs produced modelMargin. */
+  marginBasis: "scoring" | "record" | "market";
   /** De-vigged market probability that the home team wins. */
   marketHomeWinProb: number;
   /** Book margin on the moneyline (0 when unavailable). */
   vig: number;
   /** Games played by the less-established team (drives shrinkage). */
   sampleGames: number;
+
+  // --- totals ---
+  /** Posted total (null when the feed carries none). */
+  marketTotal: number | null;
+  /** Our projected total from scoring rates (null without scoring data). */
+  modelTotal: number | null;
+  /** Blended total used for over/under legs. */
+  blendedTotal: number | null;
+  totalWeight: number;
+  /** Per-game scoring rates behind modelTotal, for the rationale text. */
+  scoring?: {
+    homeFor: number;
+    homeAgainst: number;
+    awayFor: number;
+    awayAgainst: number;
+    projHome: number;
+    projAway: number;
+  };
+
+  movement?: LineMovement;
+
+  /** Margin units applied for schedule asymmetry (positive favours home). */
+  restEdge: number;
+  restNote?: string;
 }
 
-export function buildGameModel(game: Game, odds: MarketOdds): GameModel | null {
+/** Projected points for each side from season scoring rates. */
+function projectScores(home: TeamScoring, away: TeamScoring, homeEdge: number) {
+  // A team's expected output is the midpoint of what it scores and what the
+  // opponent concedes. Crude, but it is the standard first-order estimate and
+  // it is the only way to get a totals opinion out of this feed.
+  const projHome = (home.pointsForPerGame + away.pointsAgainstPerGame) / 2;
+  const projAway = (away.pointsForPerGame + home.pointsAgainstPerGame) / 2;
+  return {
+    projHome: projHome + homeEdge / 2,
+    projAway: projAway - homeEdge / 2,
+  };
+}
+
+export function buildGameModel(
+  game: Game,
+  odds: MarketOdds,
+  scoring: Record<string, TeamScoring> = {},
+  rest: Record<string, TeamRest> = {},
+): GameModel | null {
   const lm = LEAGUE_MODEL[game.league];
   if (!lm) return null;
-  const { marginSigma: sigma } = lm;
+  const { marginSigma: sigma, totalSigma } = lm;
 
   // --- market view -------------------------------------------------
   let marketHomeWinProb = 0.5;
@@ -277,41 +356,191 @@ export function buildGameModel(game: Game, odds: MarketOdds): GameModel | null {
   // --- our view ----------------------------------------------------
   const homeRec = parseRecord(game.home.record);
   const awayRec = parseRecord(game.away.record);
+  const homeScore = scoring[`${game.league}:${game.home.id}`];
+  const awayScore = scoring[`${game.league}:${game.away.id}`];
+
   let modelMargin: number | null = null;
+  let marginBasis: GameModel["marginBasis"] = "market";
   let sampleGames = 0;
-  if (homeRec && awayRec) {
+  let maxWeight = 0;
+  let scoringDetail: GameModel["scoring"];
+  let modelTotal: number | null = null;
+
+  const haveScoring =
+    homeScore != null &&
+    awayScore != null &&
+    homeScore.gamesPlayed >= 3 &&
+    awayScore.gamesPlayed >= 3;
+
+  if (haveScoring) {
+    // Points for/against beats win% on both counts: it separates teams with
+    // identical records, and it is the only input that yields a total.
+    sampleGames = Math.min(homeScore.gamesPlayed, awayScore.gamesPlayed);
+    const { projHome, projAway } = projectScores(
+      homeScore,
+      awayScore,
+      lm.homeEdge,
+    );
+    modelMargin = projHome - projAway;
+    modelTotal = projHome + projAway;
+    marginBasis = "scoring";
+    maxWeight = MAX_MODEL_WEIGHT;
+    scoringDetail = {
+      homeFor: homeScore.pointsForPerGame,
+      homeAgainst: homeScore.pointsAgainstPerGame,
+      awayFor: awayScore.pointsForPerGame,
+      awayAgainst: awayScore.pointsAgainstPerGame,
+      projHome,
+      projAway,
+    };
+  } else if (homeRec && awayRec) {
     sampleGames = Math.min(homeRec.games, awayRec.games);
     const neutralHomeWin = log5(homeRec.winPct, awayRec.winPct);
     modelMargin =
       sigma * normalQuantile(clamp(neutralHomeWin, 0.02, 0.98)) + lm.homeEdge;
+    marginBasis = "record";
+    maxWeight = MAX_RECORD_WEIGHT;
   }
 
+  // --- rest / back-to-backs ----------------------------------------
+  // Applied inside OUR projection, not on top of the blend: the market knows
+  // the schedule too, so this is an input to our vote, not a bonus edge.
+  const penalty = BACK_TO_BACK_PENALTY[game.league] ?? 0;
+  const homeRest = rest[`${game.league}:${game.home.id}`];
+  const awayRest = rest[`${game.league}:${game.away.id}`];
+  const isB2B = (r?: TeamRest) => r != null && r.daysSinceLastGame === 1;
+  const homeB2B = isB2B(homeRest);
+  const awayB2B = isB2B(awayRest);
+  // Only the ASYMMETRY matters — both teams tired cancels out.
+  const restEdge =
+    penalty === 0 ? 0 : (awayB2B ? penalty : 0) - (homeB2B ? penalty : 0);
+  if (modelMargin !== null && restEdge !== 0) modelMargin += restEdge;
+
   // --- blend with shrinkage ---------------------------------------
-  const modelWeight =
-    modelMargin === null
-      ? 0
-      : MAX_MODEL_WEIGHT * (sampleGames / (sampleGames + lm.priorGames));
+  const shrink = sampleGames / (sampleGames + lm.priorGames);
+  const modelWeight = modelMargin === null ? 0 : maxWeight * shrink;
   const blendedMargin =
     modelMargin === null
       ? marketMargin
       : modelWeight * modelMargin + (1 - modelWeight) * marketMargin;
 
+  const marketTotal =
+    odds.total != null && Number.isFinite(odds.total) ? odds.total : null;
+  const totalWeight =
+    modelTotal === null || marketTotal === null ? 0 : MAX_TOTAL_WEIGHT * shrink;
+  const blendedTotal =
+    marketTotal === null
+      ? modelTotal
+      : modelTotal === null
+        ? marketTotal
+        : totalWeight * modelTotal + (1 - totalWeight) * marketTotal;
+
   return {
     league: game.league,
     sigma,
+    totalSigma,
     marketMargin,
     modelMargin,
     blendedMargin,
     modelWeight,
+    marginBasis,
     marketHomeWinProb,
     vig,
     sampleGames,
+    marketTotal,
+    modelTotal:
+      modelTotal === null ? null : Number(modelTotal.toFixed(2)),
+    blendedTotal:
+      blendedTotal === null ? null : Number(blendedTotal.toFixed(2)),
+    totalWeight,
+    scoring: scoringDetail,
+    movement: odds.movement,
+    restEdge: Number(restEdge.toFixed(2)),
+    restNote:
+      homeB2B && awayB2B
+        ? "both teams on a back-to-back"
+        : homeB2B
+          ? `${game.home.abbreviation} on a back-to-back`
+          : awayB2B
+            ? `${game.away.abbreviation} on a back-to-back`
+            : undefined,
   };
 }
 
 /** P(home margin > threshold) under the model. */
 function pHomeMarginAbove(gm: GameModel, threshold: number): number {
   return clamp(normalCdf((gm.blendedMargin - threshold) / gm.sigma), 0.01, 0.99);
+}
+
+/** P(combined total > line) under the model. */
+function pTotalAbove(gm: GameModel, line: number): number {
+  if (gm.blendedTotal === null) return 0.5;
+  return clamp(
+    normalCdf((gm.blendedTotal - line) / gm.totalSigma),
+    0.01,
+    0.99,
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * 5b. Line movement
+ * ------------------------------------------------------------------ *
+ * Deliberately NOT used to shift probabilities. The current price already
+ * embeds every bet that moved it, so adding movement on top would double-count
+ * it. What movement genuinely tells us is whether our disagreement with the
+ * market is being corroborated or contradicted: if we like the home side and
+ * the line has moved toward home since open, sharp money agrees with us; if it
+ * moved away, our read is more likely stale. That is a statement about how
+ * much to TRUST the estimate, so it feeds confidence only.
+ */
+
+export interface MovementRead {
+  /** -1 (market moved hard against this side) .. +1 (moved hard toward it). */
+  agreement: number;
+  /** Human-readable summary of the move. */
+  label: string;
+}
+
+export function readMovement(
+  gm: GameModel,
+  meta: LegModelMeta,
+): MovementRead | null {
+  const mv: LineMovement | undefined = gm.movement;
+  if (!mv) return null;
+
+  if (meta.kind === "total") {
+    if (mv.totalDelta == null || mv.totalDelta === 0) return null;
+    // A move of ~12% of a total's SD is treated as full confirmation.
+    const toward = meta.side === "under" ? -mv.totalDelta : mv.totalDelta;
+    const scale = 0.12 * gm.totalSigma;
+    return {
+      agreement: clamp(toward / scale, -1, 1),
+      label: `total ${mv.openTotal} → ${mv.currentTotal}`,
+    };
+  }
+
+  // Margin legs: prefer the spread move (less noisy than a moneyline pair).
+  if (mv.spreadDelta != null && mv.spreadDelta !== 0) {
+    // Home spread falling (e.g. -3 -> -4.5) means money came in on home.
+    const towardHome = -mv.spreadDelta;
+    const toward = meta.side === "home" ? towardHome : -towardHome;
+    const scale = 0.12 * gm.sigma;
+    return {
+      agreement: clamp(toward / scale, -1, 1),
+      label: `spread ${mv.openSpread} → ${mv.currentSpread}`,
+    };
+  }
+
+  if (mv.homeProbDelta != null && Math.abs(mv.homeProbDelta) > 0.002) {
+    const toward =
+      meta.side === "home" ? mv.homeProbDelta : -mv.homeProbDelta;
+    return {
+      agreement: clamp(toward / 0.03, -1, 1),
+      label: `home price ${mv.homeProbDelta > 0 ? "+" : ""}${(mv.homeProbDelta * 100).toFixed(1)}pp`,
+    };
+  }
+
+  return null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -332,6 +561,7 @@ export interface ConfidenceResult {
  *  - how far our model strays from an efficient market (big gaps usually mean
  *    bad inputs, not free money),
  *  - the price quality (high vig = a worse, noisier market),
+ *  - whether sharp money has moved the line toward or away from our side,
  *  - whether we actually model this market at all.
  */
 export function computeConfidence(opts: {
@@ -341,9 +571,19 @@ export function computeConfidence(opts: {
   marketProb: number;
   vig: number;
   isModelled: boolean;
+  movement?: MovementRead | null;
+  basis?: GameModel["marginBasis"];
 }): ConfidenceResult {
-  const { sampleGames, priorGames, modelProb, marketProb, vig, isModelled } =
-    opts;
+  const {
+    sampleGames,
+    priorGames,
+    modelProb,
+    marketProb,
+    vig,
+    isModelled,
+    movement,
+    basis,
+  } = opts;
 
   const sample = clamp(sampleGames / (sampleGames + priorGames), 0, 1);
   const divergence = Math.abs(modelProb - marketProb);
@@ -351,8 +591,15 @@ export function computeConfidence(opts: {
   const agreement = clamp(1 - divergence / 0.15, 0, 1);
   // 2% hold -> ~1.0 ; 10% hold -> ~0.0
   const priceQuality = clamp(1 - (vig - 0.02) / 0.08, 0, 1);
+  // Unknown movement is neutral (0.5), not a penalty.
+  const confirmation =
+    movement == null ? 0.5 : clamp((movement.agreement + 1) / 2, 0, 1);
 
-  const base = 0.4 * sample + 0.3 * agreement + 0.3 * priceQuality;
+  const base =
+    0.32 * sample +
+    0.24 * agreement +
+    0.24 * priceQuality +
+    0.2 * confirmation;
   // An unmodelled market scores perfect "agreement" only because the model IS
   // the market — that must never read as confidence, so gate it hard.
   const score = clamp(isModelled ? base : Math.min(base * 0.35, 0.3), 0, 1);
@@ -366,7 +613,10 @@ export function computeConfidence(opts: {
       {
         label: "Sample size",
         value: Number(sample.toFixed(2)),
-        note: `${sampleGames} games of record behind the prior`,
+        note:
+          basis === "scoring"
+            ? `${sampleGames} games of scoring data behind the projection`
+            : `${sampleGames} games of record behind the prior`,
       },
       {
         label: "Market agreement",
@@ -377,6 +627,18 @@ export function computeConfidence(opts: {
         label: "Price quality",
         value: Number(priceQuality.toFixed(2)),
         note: `book margin ${(vig * 100).toFixed(1)}%`,
+      },
+      {
+        label: "Line movement",
+        value: Number(confirmation.toFixed(2)),
+        note:
+          movement == null
+            ? "no opening price in the feed to compare against"
+            : movement.agreement > 0.15
+              ? `sharp money agrees — ${movement.label}`
+              : movement.agreement < -0.15
+                ? `market moved against this side — ${movement.label}`
+                : `barely moved — ${movement.label}`,
       },
       {
         label: "Market coverage",
@@ -416,6 +678,7 @@ function makeLeg(input: LegInput): SgpLeg {
   const decimal = americanToDecimal(input.americanOdds);
   const rawImplied = impliedProbability(decimal);
   const edge = input.modelProb - rawImplied;
+  const movement = readMovement(input.gm, input.meta);
   const conf = computeConfidence({
     sampleGames: input.gm.sampleGames,
     priorGames: LEAGUE_MODEL[input.game.league].priorGames,
@@ -423,7 +686,23 @@ function makeLeg(input: LegInput): SgpLeg {
     marketProb: input.marketProb,
     vig: input.gm.vig,
     isModelled: input.isModelled,
+    movement,
+    basis: input.gm.marginBasis,
   });
+  // Movement is surfaced as a header chip and a confidence factor, so it
+  // deliberately doesn't get a third copy in the stat chips.
+  const stats =
+    input.gm.restNote && input.gm.restEdge !== 0
+      ? [
+          ...input.stats,
+          {
+            label: "Rest",
+            value: `${input.gm.restNote} (${input.gm.restEdge > 0 ? "+" : ""}${input.gm.restEdge} ${LEAGUE_MODEL[input.game.league].unit} to home)`,
+          },
+        ]
+      : input.gm.restNote
+        ? [...input.stats, { label: "Rest", value: input.gm.restNote }]
+        : input.stats;
 
   return {
     id: input.id,
@@ -444,7 +723,7 @@ function makeLeg(input: LegInput): SgpLeg {
     confidenceScore: conf.score,
     confidenceFactors: conf.factors,
     rationale: input.rationale,
-    supportingStats: input.stats,
+    supportingStats: stats,
     references: [input.reference],
     modelMeta: input.meta,
   };
@@ -462,6 +741,8 @@ export function legsFromGames(
   games: Game[],
   odds: MarketOdds[],
   gameLinks: Record<string, string> = {},
+  scoring: Record<string, TeamScoring> = {},
+  rest: Record<string, TeamRest> = {},
 ): SgpLeg[] {
   const oddsByGame = new Map(odds.map((o) => [o.gameId, o]));
   const legs: SgpLeg[] = [];
@@ -470,7 +751,7 @@ export function legsFromGames(
     if (g.status === "final") continue;
     const o = oddsByGame.get(g.id);
     if (!o) continue;
-    const gm = buildGameModel(g, o);
+    const gm = buildGameModel(g, o, scoring, rest);
     if (!gm) continue;
 
     const lm = LEAGUE_MODEL[g.league];
@@ -485,6 +766,15 @@ export function legsFromGames(
     const weightStat = {
       label: "Model weight",
       value: `${(gm.modelWeight * 100).toFixed(0)}%`,
+    };
+    const basisStat = {
+      label: "Basis",
+      value:
+        gm.marginBasis === "scoring"
+          ? `scoring rates · ${gm.sampleGames} games`
+          : gm.marginBasis === "record"
+            ? `season record · ${gm.sampleGames} games`
+            : "market only",
     };
 
     // ---- Moneyline: evaluate BOTH sides, keep the better value ----
@@ -536,6 +826,7 @@ export function legsFromGames(
             { label: "Market (no vig)", value: `${(best.market * 100).toFixed(1)}%` },
             marginStat,
             weightStat,
+            basisStat,
           ],
           reference: ref,
           meta: {
@@ -615,6 +906,7 @@ export function legsFromGames(
             { label: "Model cover", value: `${(best.model * 100).toFixed(1)}%` },
             marginStat,
             weightStat,
+            basisStat,
           ],
           reference: ref,
           meta: {
@@ -628,36 +920,100 @@ export function legsFromGames(
       );
     }
 
-    // ---- Total: we have no scoring data, so stay explicitly neutral ----
-    if (o.total != null && Number.isFinite(o.total)) {
+    // ---- Total: a real projection when scoring rates are available ----
+    if (gm.marketTotal != null) {
+      const line = gm.marketTotal;
       const priceOver = o.overOdds ?? -110;
       const priceUnder = o.underOdds ?? -110;
       const dv = removeVig([
         impliedProbability(americanToDecimal(priceOver)),
         impliedProbability(americanToDecimal(priceUnder)),
       ]);
+      const modelled = gm.modelTotal != null;
+      const pOver = modelled ? pTotalAbove(gm, line) : dv.fair[0];
+
+      const sides = [
+        {
+          side: "over" as const,
+          selection: `Over ${line}`,
+          american: priceOver,
+          model: pOver,
+          market: dv.fair[0],
+        },
+        {
+          side: "under" as const,
+          selection: `Under ${line}`,
+          american: priceUnder,
+          model: 1 - pOver,
+          market: dv.fair[1],
+        },
+      ];
+      // With no scoring data both sides are market-priced, so this reduces to
+      // the over — which is exactly the old, honestly-neutral behaviour.
+      const best = sides.reduce((a, b) =>
+        b.model - impliedProbability(americanToDecimal(b.american)) >
+        a.model - impliedProbability(americanToDecimal(a.american))
+          ? b
+          : a,
+      );
+
+      const sc = gm.scoring;
       legs.push(
         makeLeg({
           id: `${g.id}-total`,
           game: g,
           gm,
           market: "Total",
-          selection: `Over ${o.total}`,
-          americanOdds: priceOver,
-          modelProb: dv.fair[0], // == market: no directional opinion
-          marketProb: dv.fair[0],
-          isModelled: false,
-          rationale:
-            `Posted total is ${o.total}. We have no team scoring data from this feed, so ` +
-            `no directional model is applied — this leg is priced at the market and carries ` +
-            `negative expected value equal to the book's margin. Shown for completeness.`,
-          stats: [
-            { label: "Total", value: String(o.total) },
-            { label: "Price", value: formatOdds(priceOver) },
-            { label: "Model", value: "market-neutral" },
-          ],
+          selection: best.selection,
+          americanOdds: best.american,
+          modelProb: best.model,
+          marketProb: best.market,
+          isModelled: modelled,
+          rationale: modelled
+            ? `Scoring rates project ${gm.scoring?.projHome.toFixed(1)} for ${g.home.abbreviation} and ` +
+              `${gm.scoring?.projAway.toFixed(1)} for ${g.away.abbreviation}: a ${gm.modelTotal?.toFixed(1)}-${lm.unit} total ` +
+              `against a posted ${line}. Shrunk ${Math.round(gm.totalWeight * 100)}% toward our projection, the blended ` +
+              `total is ${gm.blendedTotal?.toFixed(1)}, giving ${best.selection} a ${(best.model * 100).toFixed(1)}% chance ` +
+              `versus a de-vigged market price of ${(best.market * 100).toFixed(1)}%.`
+            : `Posted total is ${line}. No scoring data is available for these teams from this feed, so ` +
+              `no directional model is applied — this leg is priced at the market and carries ` +
+              `negative expected value equal to the book's margin. Shown for completeness.`,
+          stats: modelled
+            ? [
+                { label: "Total", value: String(line) },
+                { label: "Price", value: formatOdds(best.american) },
+                { label: "Proj. total", value: `${gm.modelTotal?.toFixed(1)}` },
+                {
+                  label: "Blended",
+                  value: `${gm.blendedTotal?.toFixed(1)} ${lm.unit}`,
+                },
+                {
+                  label: "Scoring",
+                  value: sc
+                    ? `${g.home.abbreviation} ${sc.homeFor.toFixed(1)}/${sc.homeAgainst.toFixed(1)} · ${g.away.abbreviation} ${sc.awayFor.toFixed(1)}/${sc.awayAgainst.toFixed(1)}`
+                    : "—",
+                },
+                {
+                  label: "Model",
+                  value: `${(best.model * 100).toFixed(1)}%`,
+                },
+              ]
+            : [
+                { label: "Total", value: String(line) },
+                { label: "Price", value: formatOdds(best.american) },
+                { label: "Model", value: "market-neutral" },
+              ],
           reference: ref,
-          meta: { kind: "total" },
+          meta: {
+            kind: "total",
+            side: best.side,
+            totalLine: line,
+            // Only carry curve data when we actually projected a total. An
+            // unmodelled leg would otherwise draw a bell centred exactly on
+            // the line, implying modelling that didn't happen.
+            totalMean: modelled ? (gm.blendedTotal ?? undefined) : undefined,
+            totalSigma: modelled ? gm.totalSigma : undefined,
+          },
         }),
       );
     }
@@ -829,10 +1185,51 @@ export function buildRecommendation(
   const naive = legs.reduce((acc, l) => acc * l.modelProbability, 1);
   const correlated = hasCorrelatedLegs(legs);
 
-  const notes: string[] = [
-    `Model ${MODEL_VERSION}: a single projected margin per game (log5 from season records + home advantage, shrunk toward the de-vigged market by at most ${Math.round(MAX_MODEL_WEIGHT * 100)}%).`,
-    "Probabilities are compared against de-vigged market prices, so the book's margin is never counted as edge.",
+  const basisCounts = legs.reduce<Record<string, number>>((acc, l) => {
+    const b = l.supportingStats.find((s) => s.label === "Basis")?.value ?? "";
+    const key = b.startsWith("scoring")
+      ? "scoring"
+      : b.startsWith("season")
+        ? "record"
+        : "market";
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  const withMovement = legs.filter((l) => {
+    const f = l.confidenceFactors.find((c) => c.label === "Line movement");
+    return f != null && f.value !== 0.5;
+  }).length;
+  const withRest = legs.filter((l) =>
+    l.supportingStats.some((s) => s.label === "Rest"),
+  ).length;
+
+  // Always-visible account of what actually drove the slip, so the inputs
+  // aren't hidden behind a collapsed explainer.
+  const inputs: SgpRecommendation["inputs"] = [
+    {
+      label: "Scoring rates",
+      detail: `${basisCounts.scoring ?? 0}/${legs.length} legs`,
+    },
+    { label: "Line movement", detail: `${withMovement}/${legs.length} legs` },
+    { label: "Back-to-backs", detail: withRest > 0 ? `${withRest} legs` : "none today" },
+    {
+      label: "Market de-vigged",
+      detail: `${legs.length}/${legs.length} legs`,
+    },
   ];
+
+  const notes: string[] = [
+    `Model ${MODEL_VERSION}: one projected margin and one projected total per game, built from season points for/against (shrunk toward the de-vigged market by at most ${Math.round(MAX_MODEL_WEIGHT * 100)}% on the margin and ${Math.round(MAX_TOTAL_WEIGHT * 100)}% on the total). Games without scoring data fall back to a log5 record prior capped at ${Math.round(MAX_RECORD_WEIGHT * 100)}%.`,
+    "Probabilities are compared against de-vigged market prices, so the book's margin is never counted as edge.",
+    "Line movement since the market opened is reported and folded into confidence, but never into the probability: the current price already contains it, so adding it again would double-count the same information.",
+    "Back-to-backs are read from the last two days of results and applied inside our projection (NBA/NCAAB ~1.5-1.8 pts, NHL ~0.2 goals), so a rested team is never credited twice.",
+  ];
+  if (basisCounts.scoring) {
+    notes.push(
+      `${basisCounts.scoring} of ${legs.length} legs are backed by scoring rates; ${basisCounts.record ?? 0} by season record alone and ${basisCounts.market ?? 0} by the market only.`,
+    );
+  }
   const ev = expectedValue(adjusted, combinedDecimalOdds);
   if (correlated) {
     notes.push(
@@ -869,6 +1266,7 @@ export function buildRecommendation(
     /** EV is only meaningful when the combined price is actually obtainable. */
     expectedValueIsTheoretical: correlated,
     modelVersion: MODEL_VERSION,
+    inputs,
     notes,
     disclaimer: SGP_DISCLAIMER,
   };

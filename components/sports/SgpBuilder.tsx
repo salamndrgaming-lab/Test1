@@ -175,6 +175,27 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
         </p>
       </div>
 
+      <div className="card">
+        <div className="mb-2 flex flex-wrap items-baseline gap-x-2">
+          <h3 className="font-semibold">Model inputs</h3>
+          <span className="text-[0.7rem] text-[var(--muted-2)]">
+            {rec.modelVersion}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {rec.inputs.map((i) => (
+            <div key={i.label} className="rounded-xl bg-[var(--surface-2)] p-2.5">
+              <p className="text-[0.65rem] uppercase tracking-wide text-[var(--muted-2)]">
+                {i.label}
+              </p>
+              <p className="mt-0.5 text-sm font-semibold tabular-nums">
+                {i.detail}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {rec.notes.length > 0 && (
         <details className="card text-xs text-[var(--muted)]">
           <summary className="cursor-pointer font-semibold text-[var(--text)]">

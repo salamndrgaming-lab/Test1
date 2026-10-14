@@ -78,7 +78,26 @@ export function PickCard({
 }) {
   const [showWhy, setShowWhy] = useState(false);
   const [showCurve, setShowCurve] = useState(true);
+  // A curve is drawable for margin legs, and for totals once the model has
+  // scoring data to project one (an unmodelled total has nothing to draw).
+  const meta = leg.modelMeta;
+  const hasCurve =
+    meta?.kind === "margin"
+      ? meta.sigma != null
+      : meta?.totalMean != null && meta.totalSigma != null;
   const positive = leg.edge > 0;
+
+  // The model reports line movement as a confidence factor and a stat chip;
+  // lift it into the header row so it is visible without expanding anything.
+  const moveFactor = leg.confidenceFactors.find((f) => f.label === "Line movement");
+  const movement =
+    moveFactor && moveFactor.note.includes("—")
+      ? {
+          agrees: moveFactor.value > 0.575,
+          against: moveFactor.value < 0.425,
+          text: moveFactor.note.split("—")[1].trim(),
+        }
+      : null;
 
   return (
     <div
@@ -134,6 +153,22 @@ export function PickCard({
           edge {positive ? "+" : ""}
           {formatPct(leg.edge)}
         </span>
+        {movement && (
+          <span
+            className={classNames(
+              "rounded px-2 py-0.5",
+              movement.agrees
+                ? "bg-sky-500/10 text-sky-300"
+                : movement.against
+                  ? "bg-amber-500/10 text-amber-300"
+                  : "bg-[var(--surface-2)] text-[var(--muted)]",
+            )}
+            title="How the price has moved since this market opened. Movement feeds confidence, never the probability — the current price already contains it."
+          >
+            {movement.agrees ? "↗ " : movement.against ? "↘ " : "→ "}
+            {movement.text}
+          </span>
+        )}
       </div>
 
       <ProbRow leg={leg} />
@@ -160,7 +195,7 @@ export function PickCard({
             </span>
           </span>
         )}
-        {leg.modelMeta?.kind === "margin" && (
+        {hasCurve && (
           <button
             onClick={() => setShowCurve((v) => !v)}
             className="ml-auto text-[var(--accent)] underline underline-offset-2"
@@ -172,7 +207,7 @@ export function PickCard({
           onClick={() => setShowWhy((v) => !v)}
           className={classNames(
             "text-[var(--accent)] underline underline-offset-2",
-            leg.modelMeta?.kind !== "margin" && "ml-auto",
+            !hasCurve && "ml-auto",
           )}
         >
           {showWhy ? "Hide confidence" : "Why this confidence?"}

@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import type { League, ProviderResult, SgpRecommendation } from "@/types";
-import { fetchEspn } from "@/lib/providers/espn";
+import {
+  fetchEspn,
+  fetchTeamRest,
+  fetchTeamScoring,
+} from "@/lib/providers/espn";
 import { buildRecommendation, legsFromGames } from "@/lib/sgp";
 
 export const dynamic = "force-dynamic";
@@ -17,7 +21,23 @@ export async function GET() {
       LEAGUES,
       controller.signal,
     );
-    const legs = legsFromGames(games, odds, gameLinks);
+    // Only ask for standings in leagues that actually have a priced game, so
+    // we don't spend the request budget on sports that are out of season.
+    const active = [
+      ...new Set(
+        games
+          .filter((g) => g.status !== "final" && odds.some((o) => o.gameId === g.id))
+          .map((g) => g.league),
+      ),
+    ];
+    const [scoring, rest] = active.length
+      ? await Promise.all([
+          fetchTeamScoring(active, controller.signal),
+          fetchTeamRest(active, controller.signal),
+        ])
+      : [{}, {}];
+
+    const legs = legsFromGames(games, odds, gameLinks, scoring, rest);
     if (legs.length === 0) {
       throw new Error(
         "No upcoming games with live odds are posted right now — check back closer to game time.",

@@ -17,11 +17,12 @@ import { OddsTable } from "@/components/sports/OddsTable";
 import { OddsBarChart } from "@/components/charts/OddsBarChart";
 import { SgpBuilder } from "@/components/sports/SgpBuilder";
 import { StandingsTable } from "@/components/sports/StandingsTable";
+import { CalibrationPanel } from "@/components/sports/CalibrationPanel";
 import { AgeGate } from "@/components/AgeGate";
 import { classNames } from "@/lib/format";
 import { accentVars } from "@/lib/sections";
 
-type Tab = "scores" | "odds" | "standings" | "sgp";
+type Tab = "scores" | "odds" | "standings" | "sgp" | "model";
 const LEAGUES: (League | "All")[] = [
   "All",
   "NBA",
@@ -80,7 +81,7 @@ export default function SportsPage() {
       <DisclaimerBanner />
 
       <div className="no-scrollbar -mx-4 my-4 flex gap-2 overflow-x-auto px-4">
-        {(["scores", "odds", "standings", "sgp"] as Tab[]).map((t) => (
+        {(["scores", "odds", "standings", "sgp", "model"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -89,7 +90,7 @@ export default function SportsPage() {
               tab === t && "chip-active",
             )}
           >
-            {t === "sgp" ? "SGP Research" : t}
+            {t === "sgp" ? "SGP Research" : t === "model" ? "Model Accuracy" : t}
           </button>
         ))}
       </div>
@@ -194,6 +195,8 @@ export default function SportsPage() {
             </Card>
           </div>
         ))}
+
+      {tab === "model" && <CalibrationPanel />}
 
       {tab === "sgp" && (
         <>

@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { SgpRecommendation } from "@/types";
 import { PickCard } from "./PickCard";
 import { DisclaimerBanner } from "@/components/layout/DisclaimerBanner";
 import { calculatePayout } from "@/lib/sgp";
+import { usePredictions } from "@/lib/usePredictions";
 import { LegEdgeChart, ParlayGrowthChart } from "./SgpCharts";
 import { formatMoney, formatOdds, formatPct, classNames } from "@/lib/format";
 
@@ -16,6 +17,14 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
   );
   const [stake, setStake] = useState(10);
   const [acknowledged, setAcknowledged] = useState(false);
+  const { record } = usePredictions();
+
+  // Log every pick the model shows, so it can be graded once games finish.
+  const legIds = rec.legs.map((l) => l.id).join(",");
+  useEffect(() => {
+    record(rec.legs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [legIds]);
 
   const selectedLegs = rec.legs.filter((l) => selectedIds.has(l.id));
   const payout = useMemo(

@@ -186,3 +186,53 @@ export async function fetchEspn(
 
   return { games, odds, gameLinks };
 }
+
+/* ------------------------------------------------------------------ *
+ * Final scores — used to grade logged predictions.
+ * ------------------------------------------------------------------ */
+
+interface EspnSummary {
+  header?: {
+    competitions?: {
+      status?: { type?: { state?: string; completed?: boolean } };
+      competitors?: {
+        homeAway: "home" | "away";
+        score?: string;
+      }[];
+    }[];
+  };
+}
+
+export interface EspnGameResult {
+  gameId: string;
+  homeScore: number;
+  awayScore: number;
+  final: boolean;
+}
+
+/**
+ * Fetch one finished game's score via ESPN's summary endpoint (keyless).
+ * Returns null when the game isn't final or the shape is unexpected.
+ */
+export async function fetchGameResult(
+  league: League,
+  gameId: string,
+  signal: AbortSignal,
+): Promise<EspnGameResult | null> {
+  const data = await fetchJson<EspnSummary>(
+    `https://site.api.espn.com/apis/site/v2/sports/${ESPN_PATH[league]}/summary?event=${encodeURIComponent(gameId)}`,
+    signal,
+  );
+  const comp = data.header?.competitions?.[0];
+  const status = comp?.status?.type;
+  const final = status?.completed === true || status?.state === "post";
+  if (!final) return null;
+
+  const home = comp?.competitors?.find((c) => c.homeAway === "home");
+  const away = comp?.competitors?.find((c) => c.homeAway === "away");
+  const homeScore = Number(home?.score);
+  const awayScore = Number(away?.score);
+  if (!Number.isFinite(homeScore) || !Number.isFinite(awayScore)) return null;
+
+  return { gameId, homeScore, awayScore, final: true };
+}

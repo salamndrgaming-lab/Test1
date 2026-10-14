@@ -38,10 +38,14 @@ export function useFollows() {
     const today = new Date().toISOString().slice(0, 10);
     setSnapshots((prev) => {
       const list = prev[topic] ?? [];
-      if (list.some((s) => s.date.slice(0, 10) === today)) return prev;
+      const todays = list.find((s) => s.date.slice(0, 10) === today);
+      // one snapshot per day, but refresh today's if coverage actually moved so
+      // a brand-new follow isn't stuck with an empty-looking timeline
+      if (todays && todays.total === snap.total) return prev;
+      const base = todays ? list.filter((s) => s !== todays) : list;
       return {
         ...prev,
-        [topic]: [...list, { ...snap, date: new Date().toISOString() }].slice(-30),
+        [topic]: [...base, { ...snap, date: new Date().toISOString() }].slice(-30),
       };
     });
   };

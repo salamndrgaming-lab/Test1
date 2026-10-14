@@ -76,7 +76,7 @@ export function framingGap(
   opts: { perSide?: number; minCount?: number } = {},
 ): FramingGapResult {
   const perSide = opts.perSide ?? 8;
-  const minCount = opts.minCount ?? 2;
+  const minCount = opts.minCount ?? 1;
 
   const groups: Record<LeanColumn, Article[]> = { left: [], center: [], right: [] };
   for (const a of articles) groups[columnFor(a.bias)].push(a);
@@ -136,6 +136,10 @@ export function framingGap(
       right: meanSentiment(groups.right),
     },
     // headlines are short; demand a little substance before drawing conclusions
-    reliable: totalL >= 40 && totalR >= 40 && groups.left.length >= 3 && groups.right.length >= 3,
+    reliable:
+      totalL >= 15 &&
+      totalR >= 15 &&
+      groups.left.length >= 2 &&
+      groups.right.length >= 2,
   };
 }

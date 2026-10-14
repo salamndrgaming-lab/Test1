@@ -21,6 +21,13 @@ export function UpgradeCard({
       <Link href="/upgrade" className="btn-primary inline-block">
         See Pro plans
       </Link>
+      <p className="mt-2 text-[0.65rem] text-[var(--muted-2)]">
+        Testing? Turn on{" "}
+        <Link href="/profile" className="text-[var(--accent)] underline">
+          Test Pro mode
+        </Link>{" "}
+        on your profile to preview this.
+      </p>
     </div>
   );
 }

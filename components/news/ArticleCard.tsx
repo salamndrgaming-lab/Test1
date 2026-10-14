@@ -5,6 +5,7 @@ import type { Article } from "@/types";
 import { BiasBadge } from "@/components/ui";
 import { timeAgo, classNames } from "@/lib/format";
 import { sentimentLabel } from "@/lib/sentiment";
+import { useRouter } from "next/navigation";
 import { useLibrary } from "@/lib/useLibrary";
 import { usePro } from "@/lib/usePro";
 import { useArticleModal } from "@/components/ArticleModalProvider";
@@ -39,6 +40,7 @@ export function ArticleCard({
   const { isBookmarked, toggleBookmark } = useLibrary();
   const { isPro } = usePro();
   const { open } = useArticleModal();
+  const router = useRouter();
   const saved = isBookmarked(article.id);
   const favicon = `https://www.google.com/s2/favicons?domain=${article.sourceDomain}&sz=64`;
   const thumbSize = compact ? "h-12 w-12" : "h-[4.25rem] w-[4.25rem]";
@@ -77,7 +79,24 @@ export function ArticleCard({
           onError={hideOnError}
           className="h-4 w-4 rounded-sm"
         />
-        <span className="text-xs font-medium text-[var(--muted)]">
+        <span
+          role="link"
+          tabIndex={0}
+          title={`About ${article.source}`}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            router.push(`/outlet/${article.sourceDomain}`);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              router.push(`/outlet/${article.sourceDomain}`);
+            }
+          }}
+          className="cursor-pointer text-xs font-medium text-[var(--muted)] underline decoration-dotted underline-offset-2 hover:text-[var(--accent)]"
+        >
           {article.source}
         </span>
         <SentimentDot score={article.sentiment} />

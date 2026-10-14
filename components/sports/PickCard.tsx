@@ -77,7 +77,7 @@ export function PickCard({
   onToggle: () => void;
 }) {
   const [showWhy, setShowWhy] = useState(false);
-  const [showCurve, setShowCurve] = useState(false);
+  const [showCurve, setShowCurve] = useState(true);
   const positive = leg.edge > 0;
 
   return (

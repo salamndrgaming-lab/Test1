@@ -5,6 +5,7 @@ import type { Article, Game, WeatherReport } from "@/types";
 import { useProvider } from "@/lib/useProvider";
 import { Card, PageHeader, SourceBadge, Spinner, BiasBadge } from "@/components/ui";
 import { BiasSpectrum } from "@/components/charts/BiasSpectrum";
+import { FramingGap } from "@/components/news/FramingGap";
 import { ScoreCard } from "@/components/sports/ScoreCard";
 import { timeAgo } from "@/lib/format";
 import { accentVars } from "@/lib/sections";
@@ -43,6 +44,23 @@ export default function HomePage() {
         }
       />
 
+      <div className="no-scrollbar -mx-4 mb-4 flex gap-2 overflow-x-auto px-4">
+        {(
+          [
+            ["/bias", "⇄ Framing gap"],
+            ["/outlet/bbc.com", "◫ Outlet profiles"],
+            ["/following", "↗ Story momentum"],
+            ["/profile", "◎ Your reading"],
+            ["/sports", "⚑ SGP model"],
+            ["/briefing", "☀ Briefing"],
+          ] as [string, string][]
+        ).map(([href, label]) => (
+          <Link key={href} href={href} className="chip whitespace-nowrap text-xs">
+            {label}
+          </Link>
+        ))}
+      </div>
+
       <div className="grid gap-4 md:grid-cols-2">
         {/* Top stories */}
         <Card className="md:col-span-2">
@@ -74,6 +92,20 @@ export default function HomePage() {
               ))}
             </ul>
           )}
+        </Card>
+
+        {/* Framing gap — the signature feature, on the landing screen */}
+        <Card className="md:col-span-2">
+          <div className="mb-1 flex items-center justify-between">
+            <h2 className="font-serif text-[1.05rem] font-medium text-[var(--text)]">
+              Framing Gap
+            </h2>
+            <SectionLink href="/bias">Compare a story</SectionLink>
+          </div>
+          <p className="mb-3 text-xs text-[var(--muted)]">
+            Not just who covers the news — the words each side reaches for.
+          </p>
+          {news.loading ? <Spinner /> : <FramingGap articles={news.data ?? []} />}
         </Card>
 
         {/* Bias snapshot */}

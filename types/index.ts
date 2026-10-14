@@ -60,6 +60,32 @@ export interface Team {
   name: string;
   abbreviation: string;
   record?: string;
+  /** MLB only: the listed starter, which drives most of a baseball line. */
+  probablePitcher?: ProbablePitcher;
+}
+
+/** A probable starting pitcher, as the scoreboard reports them. */
+export interface ProbablePitcher {
+  name: string;
+  /** Earned run average per nine innings, when the feed carries it. */
+  era?: number;
+  wins?: number;
+  losses?: number;
+}
+
+/**
+ * Injury exposure for one team. Deliberately a count, not an estimate of
+ * points: we can't tell a starter from a third-stringer from this feed, so
+ * the model uses this to reduce its own weight rather than to guess a line.
+ */
+export interface TeamInjuryReport {
+  teamId: string;
+  /** Players listed out or doubtful. */
+  out: number;
+  /** Players listed questionable or day-to-day. */
+  questionable: number;
+  /** A few names, for display only. */
+  names: string[];
 }
 
 export interface Game {
@@ -124,6 +150,22 @@ export interface TeamRest {
   gamesInWindow: number;
 }
 
+/**
+ * The last price the market showed before a game started.
+ *
+ * Comparing the number we took against the number the market closed at is
+ * closing-line value: a much lower-variance verdict on a pick than whether it
+ * happened to win, and it converges in tens of picks rather than hundreds.
+ */
+export interface ClosingLine {
+  gameId: string;
+  /** Home spread at the close. */
+  spread?: number;
+  total?: number;
+  homeMoneyline?: number;
+  awayMoneyline?: number;
+}
+
 /** Season scoring rates for one team, used by the margin and totals models. */
 export interface TeamScoring {
   teamId: string;
@@ -172,6 +214,13 @@ export interface SgpLegModelMeta {
   totalLine?: number;
   totalMean?: number;
   totalSigma?: number;
+  /** Projected scores, for the count-model sports — rebuilds the distribution. */
+  lambdaHome?: number;
+  lambdaAway?: number;
+  /** Which distribution family priced this leg. */
+  family?: "skellam" | "key-number" | "normal" | "poisson";
+  /** P(landing exactly on the line). Zero for half-point lines. */
+  pushProbability?: number;
 }
 
 export interface SgpLeg {

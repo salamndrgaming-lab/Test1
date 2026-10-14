@@ -4,6 +4,8 @@ import type {
   League,
   LineMovement,
   MarketOdds,
+  ProbablePitcher,
+  TeamInjuryReport,
   TeamRest,
   TeamScoring,
   SgpConfidenceFactor,
@@ -12,6 +14,17 @@ import type {
   SgpRecommendation,
 } from "@/types";
 import { formatOdds } from "@/lib/format";
+import {
+  intervalProbability,
+  lineProbability,
+  marginDistribution,
+  normalCdf,
+  totalDistribution,
+  usesCountModel,
+  type DiscreteDist,
+} from "@/lib/distributions";
+
+export { normalCdf };
 
 export const SGP_DISCLAIMER =
   "For informational and educational purposes only. This is not betting or " +
@@ -19,7 +32,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "ratings-v3";
+export const MODEL_VERSION = "dist-v4";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -87,26 +100,6 @@ export function combineLegs(legs: SgpLeg[]): number {
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
-}
-
-/** Abramowitz & Stegun 7.1.26 — |error| < 1.5e-7. */
-function erf(x: number): number {
-  const sign = x < 0 ? -1 : 1;
-  const ax = Math.abs(x);
-  const t = 1 / (1 + 0.3275911 * ax);
-  const y =
-    1 -
-    ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) *
-      t +
-      0.254829592) *
-      t *
-      Math.exp(-ax * ax);
-  return sign * y;
-}
-
-/** Standard normal CDF. */
-export function normalCdf(z: number): number {
-  return 0.5 * (1 + erf(z / Math.SQRT2));
 }
 
 /** Inverse standard normal CDF (Acklam's approximation). */
@@ -195,16 +188,18 @@ export interface LeagueModel {
   homeEdge: number;
   /** Shrinkage constant: games needed before records carry real weight. */
   priorGames: number;
+  /** League-average combined total — the fallback when none is posted. */
+  avgTotal: number;
   unit: string;
 }
 
 export const LEAGUE_MODEL: Record<League, LeagueModel> = {
-  NBA: { marginSigma: 12.0, totalSigma: 16.5, homeEdge: 2.2, priorGames: 20, unit: "pts" },
-  NFL: { marginSigma: 13.2, totalSigma: 13.5, homeEdge: 1.6, priorGames: 6, unit: "pts" },
-  NHL: { marginSigma: 2.3, totalSigma: 2.7, homeEdge: 0.25, priorGames: 25, unit: "goals" },
-  MLB: { marginSigma: 4.2, totalSigma: 4.4, homeEdge: 0.2, priorGames: 40, unit: "runs" },
-  NCAAF: { marginSigma: 16.5, totalSigma: 17.5, homeEdge: 2.4, priorGames: 6, unit: "pts" },
-  NCAAB: { marginSigma: 11.0, totalSigma: 15.0, homeEdge: 3.0, priorGames: 15, unit: "pts" },
+  NBA: { marginSigma: 12.0, totalSigma: 16.5, homeEdge: 2.2, priorGames: 20, avgTotal: 226, unit: "pts" },
+  NFL: { marginSigma: 13.2, totalSigma: 13.5, homeEdge: 1.6, priorGames: 6, avgTotal: 44, unit: "pts" },
+  NHL: { marginSigma: 2.3, totalSigma: 2.7, homeEdge: 0.25, priorGames: 25, avgTotal: 6.1, unit: "goals" },
+  MLB: { marginSigma: 4.2, totalSigma: 4.4, homeEdge: 0.2, priorGames: 40, avgTotal: 8.8, unit: "runs" },
+  NCAAF: { marginSigma: 16.5, totalSigma: 17.5, homeEdge: 2.4, priorGames: 6, avgTotal: 55, unit: "pts" },
+  NCAAB: { marginSigma: 11.0, totalSigma: 15.0, homeEdge: 3.0, priorGames: 15, avgTotal: 145, unit: "pts" },
 };
 
 /**
@@ -310,15 +305,69 @@ export interface GameModel {
   /** Margin units applied for schedule asymmetry (positive favours home). */
   restEdge: number;
   restNote?: string;
+
+  // --- distributions ---
+  /** Projected scores, present for the count-model sports (NHL, MLB). */
+  lambdaHome?: number;
+  lambdaAway?: number;
+  /** Final margin distribution, in the right family for the sport. */
+  marginDist: DiscreteDist;
+  /** Combined total distribution (null when no total is posted). */
+  totalDist: DiscreteDist | null;
+
+  // --- information we know we're missing ---
+  /** 0..1 — how much of the picture we think we have. */
+  infoQuality: number;
+  /** Plain-language account of what we're blind to. */
+  blindSpots: string[];
+  /** MLB: the probable starters, when the feed carries them. */
+  pitchers?: { home?: ProbablePitcher; away?: ProbablePitcher };
 }
 
-/** Projected points for each side from season scoring rates. */
-function projectScores(home: TeamScoring, away: TeamScoring, homeEdge: number) {
-  // A team's expected output is the midpoint of what it scores and what the
-  // opponent concedes. Crude, but it is the standard first-order estimate and
-  // it is the only way to get a totals opinion out of this feed.
-  const projHome = (home.pointsForPerGame + away.pointsAgainstPerGame) / 2;
-  const projAway = (away.pointsForPerGame + home.pointsAgainstPerGame) / 2;
+/**
+ * Share of a baseball game the listed starter is expected to cover.
+ * Roughly five and a bit innings of nine across the modern league.
+ */
+export const STARTER_SHARE = 0.55;
+/** ERA counts earned runs only; total runs allowed run a little higher. */
+export const UNEARNED_RUN_FACTOR = 1.08;
+
+/**
+ * Projected points for each side from season scoring rates.
+ *
+ * A team's expected output is the midpoint of what it scores and what the
+ * opponent concedes. Crude, but it is the standard first-order estimate.
+ *
+ * For baseball the "what the opponent concedes" term is replaced by a
+ * starter-weighted version, because the listed pitcher — not the opponent's
+ * season average — is most of the information in a run line or a total. This
+ * is the single largest input the model was missing.
+ */
+function projectScores(
+  home: TeamScoring,
+  away: TeamScoring,
+  homeEdge: number,
+  pitchers?: { home?: ProbablePitcher; away?: ProbablePitcher },
+) {
+  const concede = (
+    teamAgainstPerGame: number,
+    starter?: ProbablePitcher,
+  ): number => {
+    if (starter?.era == null || !Number.isFinite(starter.era)) {
+      return teamAgainstPerGame;
+    }
+    const starterRuns = starter.era * UNEARNED_RUN_FACTOR;
+    return (
+      STARTER_SHARE * starterRuns + (1 - STARTER_SHARE) * teamAgainstPerGame
+    );
+  };
+
+  // The home team's run output is shaped by the AWAY starter, and vice versa.
+  const homeFacing = concede(away.pointsAgainstPerGame, pitchers?.away);
+  const awayFacing = concede(home.pointsAgainstPerGame, pitchers?.home);
+
+  const projHome = (home.pointsForPerGame + homeFacing) / 2;
+  const projAway = (away.pointsForPerGame + awayFacing) / 2;
   return {
     projHome: projHome + homeEdge / 2,
     projAway: projAway - homeEdge / 2,
@@ -330,6 +379,7 @@ export function buildGameModel(
   odds: MarketOdds,
   scoring: Record<string, TeamScoring> = {},
   rest: Record<string, TeamRest> = {},
+  injuries: Record<string, TeamInjuryReport> = {},
 ): GameModel | null {
   const lm = LEAGUE_MODEL[game.league];
   if (!lm) return null;
@@ -372,6 +422,11 @@ export function buildGameModel(
     homeScore.gamesPlayed >= 3 &&
     awayScore.gamesPlayed >= 3;
 
+  const pitchers =
+    game.league === "MLB" && (game.home.probablePitcher || game.away.probablePitcher)
+      ? { home: game.home.probablePitcher, away: game.away.probablePitcher }
+      : undefined;
+
   if (haveScoring) {
     // Points for/against beats win% on both counts: it separates teams with
     // identical records, and it is the only input that yields a total.
@@ -380,6 +435,7 @@ export function buildGameModel(
       homeScore,
       awayScore,
       lm.homeEdge,
+      pitchers,
     );
     modelMargin = projHome - projAway;
     modelTotal = projHome + projAway;
@@ -416,9 +472,44 @@ export function buildGameModel(
     penalty === 0 ? 0 : (awayB2B ? penalty : 0) - (homeB2B ? penalty : 0);
   if (modelMargin !== null && restEdge !== 0) modelMargin += restEdge;
 
+  // --- what we know we don't know ----------------------------------
+  // Injuries are the largest variable we don't model, and the market prices
+  // them within minutes. That creates the system's worst failure mode: if a
+  // line moved four points on an injury we can't see, our model now
+  // "disagrees" with the market by four points and would happily call that
+  // value. So rather than guess a magnitude we can't estimate, we detect that
+  // information is missing and defer further to the market — the model's vote
+  // shrinks exactly when it is least informed.
+  const homeInj = injuries[`${game.league}:${game.home.id}`];
+  const awayInj = injuries[`${game.league}:${game.away.id}`];
+  const blindSpots: string[] = [];
+  let infoQuality = 1;
+
+  const outTotal = (homeInj?.out ?? 0) + (awayInj?.out ?? 0);
+  const questionableTotal =
+    (homeInj?.questionable ?? 0) + (awayInj?.questionable ?? 0);
+  if (outTotal > 0 || questionableTotal > 0) {
+    // Capped, because we cannot tell a starter from a third-stringer here.
+    const brake = Math.min(0.35, 0.06 * outTotal + 0.02 * questionableTotal);
+    infoQuality *= 1 - brake;
+    blindSpots.push(
+      `${outTotal} player${outTotal === 1 ? "" : "s"} out, ${questionableTotal} questionable — we don't model who they are`,
+    );
+  }
+  if (game.league === "MLB" && !pitchers?.home?.era && !pitchers?.away?.era) {
+    // The starter is most of a baseball line; without one we are guessing.
+    infoQuality *= 0.55;
+    blindSpots.push("no probable pitchers in the feed — the dominant input");
+  }
+  if (marginBasis === "record") {
+    infoQuality *= 0.8;
+    blindSpots.push("no scoring data: win% only, which can't separate teams with equal records");
+  }
+
   // --- blend with shrinkage ---------------------------------------
   const shrink = sampleGames / (sampleGames + lm.priorGames);
-  const modelWeight = modelMargin === null ? 0 : maxWeight * shrink;
+  const modelWeight =
+    modelMargin === null ? 0 : maxWeight * shrink * infoQuality;
   const blendedMargin =
     modelMargin === null
       ? marketMargin
@@ -427,13 +518,48 @@ export function buildGameModel(
   const marketTotal =
     odds.total != null && Number.isFinite(odds.total) ? odds.total : null;
   const totalWeight =
-    modelTotal === null || marketTotal === null ? 0 : MAX_TOTAL_WEIGHT * shrink;
+    modelTotal === null || marketTotal === null
+      ? 0
+      : MAX_TOTAL_WEIGHT * shrink * infoQuality;
   const blendedTotal =
     marketTotal === null
       ? modelTotal
       : modelTotal === null
         ? marketTotal
         : totalWeight * modelTotal + (1 - totalWeight) * marketTotal;
+
+  // --- distributions ------------------------------------------------
+  // Count-model sports need a projected score for each side. Deriving them
+  // from the BLENDED margin and total means the market's view is baked in,
+  // and it couples the margin and total distributions instead of treating
+  // them as two independent guesses.
+  let lambdaHome: number | undefined;
+  let lambdaAway: number | undefined;
+  if (usesCountModel(game.league)) {
+    const totalForLambda = blendedTotal ?? lm.avgTotal;
+    lambdaHome = Math.max(0.1, (totalForLambda + blendedMargin) / 2);
+    lambdaAway = Math.max(0.1, (totalForLambda - blendedMargin) / 2);
+  }
+
+  const marginDist = marginDistribution({
+    league: game.league,
+    mean: blendedMargin,
+    sd: sigma,
+    lambdaHome,
+    lambdaAway,
+  });
+  const totalDist =
+    blendedTotal === null
+      ? null
+      : totalDistribution({
+          league: game.league,
+          mean: blendedMargin,
+          sd: sigma,
+          lambdaHome,
+          lambdaAway,
+          totalMean: blendedTotal,
+          totalSd: totalSigma,
+        });
 
   return {
     league: game.league,
@@ -464,22 +590,36 @@ export function buildGameModel(
           : awayB2B
             ? `${game.away.abbreviation} on a back-to-back`
             : undefined,
+    lambdaHome:
+      lambdaHome === undefined ? undefined : Number(lambdaHome.toFixed(3)),
+    lambdaAway:
+      lambdaAway === undefined ? undefined : Number(lambdaAway.toFixed(3)),
+    marginDist,
+    totalDist,
+    infoQuality: Number(infoQuality.toFixed(3)),
+    blindSpots,
+    pitchers,
   };
 }
 
-/** P(home margin > threshold) under the model. */
+/**
+ * P(home margin > threshold), conditional on the game not landing exactly on
+ * the number. A push is refunded and is excluded from our Brier score, so the
+ * probability we publish has to be the no-push-conditional one.
+ */
 function pHomeMarginAbove(gm: GameModel, threshold: number): number {
-  return clamp(normalCdf((gm.blendedMargin - threshold) / gm.sigma), 0.01, 0.99);
+  return lineProbability(gm.marginDist, threshold, "above").win;
 }
 
-/** P(combined total > line) under the model. */
+/** Push probability at a margin line (zero for half-point lines). */
+function pMarginPush(gm: GameModel, threshold: number): number {
+  return gm.marginDist.at(threshold);
+}
+
+/** P(combined total > line | no push). */
 function pTotalAbove(gm: GameModel, line: number): number {
-  if (gm.blendedTotal === null) return 0.5;
-  return clamp(
-    normalCdf((gm.blendedTotal - line) / gm.totalSigma),
-    0.01,
-    0.99,
-  );
+  if (!gm.totalDist) return 0.5;
+  return lineProbability(gm.totalDist, line, "above").win;
 }
 
 /* ------------------------------------------------------------------ *
@@ -573,6 +713,8 @@ export function computeConfidence(opts: {
   isModelled: boolean;
   movement?: MovementRead | null;
   basis?: GameModel["marginBasis"];
+  infoQuality?: number;
+  blindSpots?: string[];
 }): ConfidenceResult {
   const {
     sampleGames,
@@ -583,6 +725,8 @@ export function computeConfidence(opts: {
     isModelled,
     movement,
     basis,
+    infoQuality = 1,
+    blindSpots = [],
   } = opts;
 
   const sample = clamp(sampleGames / (sampleGames + priorGames), 0, 1);
@@ -596,10 +740,11 @@ export function computeConfidence(opts: {
     movement == null ? 0.5 : clamp((movement.agreement + 1) / 2, 0, 1);
 
   const base =
-    0.32 * sample +
-    0.24 * agreement +
-    0.24 * priceQuality +
-    0.2 * confirmation;
+    0.26 * sample +
+    0.2 * agreement +
+    0.2 * priceQuality +
+    0.16 * confirmation +
+    0.18 * clamp(infoQuality, 0, 1);
   // An unmodelled market scores perfect "agreement" only because the model IS
   // the market — that must never read as confidence, so gate it hard.
   const score = clamp(isModelled ? base : Math.min(base * 0.35, 0.3), 0, 1);
@@ -627,6 +772,14 @@ export function computeConfidence(opts: {
         label: "Price quality",
         value: Number(priceQuality.toFixed(2)),
         note: `book margin ${(vig * 100).toFixed(1)}%`,
+      },
+      {
+        label: "Information",
+        value: Number(clamp(infoQuality, 0, 1).toFixed(2)),
+        note:
+          blindSpots.length === 0
+            ? "no known gaps in this game's inputs"
+            : blindSpots.join("; "),
       },
       {
         label: "Line movement",
@@ -688,21 +841,39 @@ function makeLeg(input: LegInput): SgpLeg {
     isModelled: input.isModelled,
     movement,
     basis: input.gm.marginBasis,
+    infoQuality: input.gm.infoQuality,
+    blindSpots: input.gm.blindSpots,
   });
   // Movement is surfaced as a header chip and a confidence factor, so it
   // deliberately doesn't get a third copy in the stat chips.
-  const stats =
-    input.gm.restNote && input.gm.restEdge !== 0
-      ? [
-          ...input.stats,
-          {
-            label: "Rest",
-            value: `${input.gm.restNote} (${input.gm.restEdge > 0 ? "+" : ""}${input.gm.restEdge} ${LEAGUE_MODEL[input.game.league].unit} to home)`,
-          },
-        ]
-      : input.gm.restNote
-        ? [...input.stats, { label: "Rest", value: input.gm.restNote }]
-        : input.stats;
+  const stats = [...input.stats];
+  if (input.gm.restNote) {
+    stats.push({
+      label: "Rest",
+      value:
+        input.gm.restEdge !== 0
+          ? `${input.gm.restNote} (${input.gm.restEdge > 0 ? "+" : ""}${input.gm.restEdge} ${LEAGUE_MODEL[input.game.league].unit} to home)`
+          : input.gm.restNote,
+    });
+  }
+  // A push is a refund, so the probability above is conditional on not
+  // landing here — worth stating when it's a real chance.
+  const push = input.meta.pushProbability ?? 0;
+  if (push > 0.005) {
+    stats.push({
+      label: "Push",
+      value: `${(push * 100).toFixed(1)}% (stake returned)`,
+    });
+  }
+  const p = input.gm.pitchers;
+  if (p?.home?.era != null || p?.away?.era != null) {
+    stats.push({
+      label: "Starters",
+      value:
+        `${p.away?.name ?? "TBD"}${p.away?.era != null ? ` ${p.away.era.toFixed(2)}` : ""}` +
+        ` @ ${p.home?.name ?? "TBD"}${p.home?.era != null ? ` ${p.home.era.toFixed(2)}` : ""} ERA`,
+    });
+  }
 
   return {
     id: input.id,
@@ -743,6 +914,7 @@ export function legsFromGames(
   gameLinks: Record<string, string> = {},
   scoring: Record<string, TeamScoring> = {},
   rest: Record<string, TeamRest> = {},
+  injuries: Record<string, TeamInjuryReport> = {},
 ): SgpLeg[] {
   const oddsByGame = new Map(odds.map((o) => [o.gameId, o]));
   const legs: SgpLeg[] = [];
@@ -751,7 +923,7 @@ export function legsFromGames(
     if (g.status === "final") continue;
     const o = oddsByGame.get(g.id);
     if (!o) continue;
-    const gm = buildGameModel(g, o, scoring, rest);
+    const gm = buildGameModel(g, o, scoring, rest, injuries);
     if (!gm) continue;
 
     const lm = LEAGUE_MODEL[g.league];
@@ -835,6 +1007,10 @@ export function legsFromGames(
             threshold: 0,
             blendedMargin: gm.blendedMargin,
             sigma: gm.sigma,
+            lambdaHome: gm.lambdaHome,
+            lambdaAway: gm.lambdaAway,
+            family: gm.marginDist.family,
+            pushProbability: 0, // a moneyline cannot push (no sport allows ties)
           },
         }),
       );
@@ -915,6 +1091,10 @@ export function legsFromGames(
             threshold: best.threshold,
             blendedMargin: gm.blendedMargin,
             sigma: gm.sigma,
+            lambdaHome: gm.lambdaHome,
+            lambdaAway: gm.lambdaAway,
+            family: gm.marginDist.family,
+            pushProbability: Number(pMarginPush(gm, best.threshold).toFixed(4)),
           },
         }),
       );
@@ -1013,6 +1193,10 @@ export function legsFromGames(
             // the line, implying modelling that didn't happen.
             totalMean: modelled ? (gm.blendedTotal ?? undefined) : undefined,
             totalSigma: modelled ? gm.totalSigma : undefined,
+            lambdaHome: modelled ? gm.lambdaHome : undefined,
+            lambdaAway: modelled ? gm.lambdaAway : undefined,
+            family: modelled ? gm.totalDist?.family : undefined,
+            pushProbability: Number((gm.totalDist?.at(line) ?? 0).toFixed(4)),
           },
         }),
       );
@@ -1052,8 +1236,16 @@ export function jointProbability(legs: SgpLeg[]): number {
 
     if (marginLegs.length > 0) {
       const meta = marginLegs[0].modelMeta!;
-      const m = meta.blendedMargin ?? 0;
-      const sigma = meta.sigma ?? 1;
+      // Rebuild the game's own distribution so the joint probability is read
+      // off the same object that priced each leg — a normal interval would
+      // disagree with the legs for every count-model or key-number sport.
+      const dist = marginDistribution({
+        league: marginLegs[0].league,
+        mean: meta.blendedMargin ?? 0,
+        sd: meta.sigma ?? 1,
+        lambdaHome: meta.lambdaHome,
+        lambdaAway: meta.lambdaAway,
+      });
       // Convert every constraint into bounds on the HOME margin.
       let lower = -Infinity;
       let upper = Infinity;
@@ -1063,9 +1255,7 @@ export function jointProbability(legs: SgpLeg[]): number {
         if (mm.side === "home") lower = Math.max(lower, t);
         else upper = Math.min(upper, -t);
       }
-      const pUpper = upper === Infinity ? 1 : normalCdf((upper - m) / sigma);
-      const pLower = lower === -Infinity ? 0 : normalCdf((lower - m) / sigma);
-      joint *= clamp(pUpper - pLower, 0.0001, 0.9999);
+      joint *= intervalProbability(dist, lower, upper);
     }
 
     // totals are treated as independent of the margin within a game
@@ -1196,6 +1386,14 @@ export function buildRecommendation(
     return acc;
   }, {});
 
+  const families: string[] = [
+    ...new Set(
+      legs
+        .map((l) => l.modelMeta?.family)
+        .filter((f): f is NonNullable<typeof f> => f != null),
+    ),
+  ];
+
   const withMovement = legs.filter((l) => {
     const f = l.confidenceFactors.find((c) => c.label === "Line movement");
     return f != null && f.value !== 0.5;
@@ -1217,10 +1415,34 @@ export function buildRecommendation(
       label: "Market de-vigged",
       detail: `${legs.length}/${legs.length} legs`,
     },
+    {
+      label: "Distribution",
+      detail: families.length ? families.join(" + ") : "—",
+    },
+    {
+      label: "Push risk priced",
+      detail: `${legs.filter((l) => (l.modelMeta?.pushProbability ?? 0) > 0.005).length} legs`,
+    },
+    {
+      label: "Information",
+      detail: `${Math.round(
+        (legs.reduce(
+          (acc, l) =>
+            acc +
+            (l.confidenceFactors.find((f) => f.label === "Information")?.value ??
+              1),
+          0,
+        ) /
+          Math.max(1, legs.length)) *
+          100,
+      )}% avg`,
+    },
   ];
 
   const notes: string[] = [
     `Model ${MODEL_VERSION}: one projected margin and one projected total per game, built from season points for/against (shrunk toward the de-vigged market by at most ${Math.round(MAX_MODEL_WEIGHT * 100)}% on the margin and ${Math.round(MAX_TOTAL_WEIGHT * 100)}% on the total). Games without scoring data fall back to a log5 record prior capped at ${Math.round(MAX_RECORD_WEIGHT * 100)}%.`,
+    `Each sport is priced on its own distribution${families.length ? ` (${families.join(", ")})` : ""}, not a single normal curve: hockey and baseball margins are a difference of two Poissons, football margins are reweighted toward the key numbers 3 and 7, and basketball uses a discretized normal. Every distribution is discrete, so a line that can be landed on exactly carries real push mass and the published probability is conditional on not pushing.`,
+    "Injuries are detected but never quantified. We can't tell a starter from a third-stringer from this feed, so a team with players out reduces how much the model's own view counts rather than moving the projection — the model defers to the market precisely where it is least informed.",
     "Probabilities are compared against de-vigged market prices, so the book's margin is never counted as edge.",
     "Line movement since the market opened is reported and folded into confidence, but never into the probability: the current price already contains it, so adding it again would double-count the same information.",
     "Back-to-backs are read from the last two days of results and applied inside our projection (NBA/NCAAB ~1.5-1.8 pts, NHL ~0.2 goals), so a rested team is never credited twice.",

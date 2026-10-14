@@ -33,15 +33,19 @@ Every section reads through a provider in `lib/providers/` wrapped by `getLive`,
 
 The **SGP research tool** builds a 6+ leg cross-game slip from real, current games and their market odds, and links each leg to the actual ESPN game page. Game-level markets are used because free/keyless sources don't expose player-prop lines.
 
-Model `ratings-v3` (`lib/sgp.ts`) is a disclosed heuristic, not a black box:
+Model `dist-v4` (`lib/sgp.ts`, `lib/distributions.ts`) is a disclosed heuristic, not a black box:
 
 - **One distribution per game.** Season points for/against give a projected margin and a projected total; moneyline, spread and over/under are all read off those, so the markets can never contradict each other.
+- **Each sport gets its own distribution**, not one normal curve. Hockey and baseball margins are a difference of two Poissons (so variance follows the scoring environment instead of a constant, and margin and total are derived from the same pair of projected scores rather than assumed independent); football margins are reweighted toward the key numbers 3 and 7; basketball uses a discretized normal. Leagues that cannot end level have their tie mass redistributed, so P(home) + P(away) is exactly 1.
+- **Push mass is priced.** Every distribution is discrete, so a line that can be landed on exactly carries real probability and the published number is conditional on not pushing. This was the largest single numerical fix: an integer NHL total of 6 has a ~16% push chance, which moved its over probability from 41.0% to 48.8%.
+- **Injuries are detected, never quantified.** We can't tell a starter from a third-stringer from this feed, so players listed out reduce how much the model's own view counts rather than moving the line — the model defers to the market precisely where it is least informed. The same brake applies to an MLB game with no probable pitchers.
+- **MLB probable pitchers** feed the projection directly: the listed starter is blended against his own team's runs-allowed baseline at roughly the share of a game he covers, because the starter is most of the information in a baseball line.
 - **De-vigged benchmarks.** Every probability is compared against the market price with the book's hold removed, so the hold is never mistaken for edge.
 - **Shrinkage with hard caps.** Our view can move the market line by at most 35% (margin) / 30% (total); games with no scoring data fall back to a log5 record prior capped at 20%, and games with neither are priced purely at the market.
 - **Back-to-backs** are read from the previous two days of results and applied inside our projection (~1.8 pts NBA, ~1.5 NCAAB, ~0.2 goals NHL; zero where the concept doesn't apply).
 - **Line movement** (ESPN ships opening prices alongside current ones) feeds *confidence only* — the current price already contains it, so moving the probability too would double-count the same information.
 - **Exact same-game correlation.** Nested margin legs are intersected on one normal margin instead of multiplied, and a slip whose combined price isn't obtainable says so.
-- **Graded.** Every leg shown is logged with the probability claimed, then scored against final scores: Brier, skill vs the de-vigged market, flat-stake ROI and a calibration curve (`lib/predictions.ts`, Model tab).
+- **Graded twice over.** Every leg shown is logged with the probability claimed and the number taken. **Closing line value** is the fast signal — did the market move toward our number? — and converges in tens of picks rather than hundreds, because it asks a continuous question instead of a binary one. Outcome grading follows: Brier, skill vs the de-vigged market, flat-stake ROI and a calibration curve (`lib/predictions.ts`, Model tab).
 
 ## Develop
 

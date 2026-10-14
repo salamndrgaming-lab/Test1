@@ -2,7 +2,10 @@ import type {
   Game,
   League,
   LineMovement,
+  ClosingLine,
   MarketOdds,
+  ProbablePitcher,
+  TeamInjuryReport,
   TeamRest,
   TeamScoring,
 } from "@/types";
@@ -173,11 +176,59 @@ function parseDetails(details?: string): { abbr?: string; line?: number } {
   return {};
 }
 
+interface EspnStatistic {
+  name?: string;
+  abbreviation?: string;
+  displayValue?: string;
+  value?: number;
+}
+interface EspnProbable {
+  name?: string;
+  displayName?: string;
+  athlete?: { displayName?: string; shortName?: string };
+  statistics?: EspnStatistic[];
+}
 interface EspnCompetitor {
   homeAway: "home" | "away";
   score?: string;
   team?: { id?: string; displayName?: string; abbreviation?: string };
   records?: { summary?: string }[];
+  probables?: EspnProbable[];
+}
+
+/**
+ * The listed starting pitcher and their ERA.
+ *
+ * Baseball is the one sport where a single player is most of the line, and
+ * ESPN ships probables in the same scoreboard payload we already fetch. Field
+ * names vary, so match the ERA on several spellings.
+ */
+function extractPitcher(c?: EspnCompetitor): ProbablePitcher | undefined {
+  const p = c?.probables?.[0];
+  if (!p) return undefined;
+  const name =
+    p.athlete?.displayName ?? p.athlete?.shortName ?? p.displayName ?? p.name;
+  if (!name) return undefined;
+
+  const stat = (keys: string[]): number | undefined => {
+    for (const s of p.statistics ?? []) {
+      const tag = (s.abbreviation ?? s.name ?? "").toLowerCase();
+      if (!keys.includes(tag)) continue;
+      const n =
+        s.value ?? (s.displayValue ? parseFloat(s.displayValue) : undefined);
+      if (n != null && Number.isFinite(n)) return n;
+    }
+    return undefined;
+  };
+
+  const era = stat(["era", "earnedrunaverage"]);
+  return {
+    name,
+    // A nonsensical ERA is worse than none: it would move the projection.
+    era: era != null && era >= 0 && era <= 15 ? era : undefined,
+    wins: stat(["w", "wins"]),
+    losses: stat(["l", "losses"]),
+  };
 }
 
 interface EspnEvent {
@@ -246,12 +297,14 @@ export async function fetchEspn(
           name: home.team?.displayName ?? "Home",
           abbreviation: home.team?.abbreviation ?? "HOM",
           record: home.records?.[0]?.summary,
+          probablePitcher: extractPitcher(home),
         },
         away: {
           id: away.team?.id ?? "a",
           name: away.team?.displayName ?? "Away",
           abbreviation: away.team?.abbreviation ?? "AWY",
           record: away.records?.[0]?.summary,
+          probablePitcher: extractPitcher(away),
         },
         homeScore: home.score ? Number(home.score) : undefined,
         awayScore: away.score ? Number(away.score) : undefined,
@@ -555,6 +608,107 @@ export async function fetchTeamRest(
 }
 
 /* ------------------------------------------------------------------ *
+ * Injuries
+ * ------------------------------------------------------------------ *
+ * Used as a brake, not an estimate. We can't tell a franchise player from a
+ * third-stringer out of this feed, so the model reads these counts as "there
+ * is information here we don't have" and defers further to the market, rather
+ * than inventing a points adjustment.
+ */
+
+interface EspnInjuryEntry {
+  status?: string;
+  type?: { name?: string; description?: string };
+  athlete?: { displayName?: string; shortName?: string };
+  details?: { type?: string };
+}
+interface EspnInjuryTeam {
+  team?: { id?: string; abbreviation?: string };
+  id?: string;
+  abbreviation?: string;
+  injuries?: EspnInjuryEntry[];
+}
+interface EspnInjuryResponse {
+  injuries?: EspnInjuryTeam[];
+  items?: EspnInjuryTeam[];
+}
+
+const OUT_STATUSES = ["out", "doubtful", "injured reserve", "ir", "suspension"];
+const QUESTIONABLE_STATUSES = ["questionable", "day-to-day", "game-time decision", "probable"];
+
+function classifyStatus(entry: EspnInjuryEntry): "out" | "questionable" | null {
+  const raw = (
+    entry.status ??
+    entry.type?.name ??
+    entry.type?.description ??
+    entry.details?.type ??
+    ""
+  ).toLowerCase();
+  if (!raw) return null;
+  if (OUT_STATUSES.some((s) => raw.includes(s))) return "out";
+  if (QUESTIONABLE_STATUSES.some((s) => raw.includes(s))) return "questionable";
+  return null;
+}
+
+/** Parse one league's injury payload into per-team counts. */
+export function parseInjuries(
+  league: League,
+  data: unknown,
+): Record<string, TeamInjuryReport> {
+  const body = (data ?? {}) as EspnInjuryResponse;
+  const teams = body.injuries ?? body.items ?? [];
+  const out: Record<string, TeamInjuryReport> = {};
+
+  for (const t of teams) {
+    const teamId = t.team?.id ?? t.id;
+    if (!teamId) continue;
+    const report: TeamInjuryReport = {
+      teamId,
+      out: 0,
+      questionable: 0,
+      names: [],
+    };
+    for (const entry of t.injuries ?? []) {
+      const kind = classifyStatus(entry);
+      if (!kind) continue;
+      if (kind === "out") report.out++;
+      else report.questionable++;
+      const name = entry.athlete?.displayName ?? entry.athlete?.shortName;
+      if (name && report.names.length < 6) report.names.push(name);
+    }
+    if (report.out > 0 || report.questionable > 0) {
+      out[`${league}:${teamId}`] = report;
+    }
+  }
+  return out;
+}
+
+/**
+ * Injury reports keyed by `${league}:${teamId}`. Best-effort: a league whose
+ * report fails contributes nothing, which simply means no brake is applied.
+ */
+export async function fetchInjuries(
+  leagues: League[],
+  signal: AbortSignal,
+): Promise<Record<string, TeamInjuryReport>> {
+  const results = await Promise.allSettled(
+    leagues.map((league) =>
+      fetchJson<EspnInjuryResponse>(
+        `https://site.api.espn.com/apis/site/v2/sports/${ESPN_PATH[league]}/injuries`,
+        signal,
+      ).then((data) => ({ league, data })),
+    ),
+  );
+
+  const out: Record<string, TeamInjuryReport> = {};
+  for (const r of results) {
+    if (r.status !== "fulfilled") continue;
+    Object.assign(out, parseInjuries(r.value.league, r.value.data));
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
  * Final scores — used to grade logged predictions.
  * ------------------------------------------------------------------ */
 
@@ -565,9 +719,11 @@ interface EspnSummary {
       competitors?: {
         homeAway: "home" | "away";
         score?: string;
+        team?: { abbreviation?: string };
       }[];
     }[];
   };
+  pickcenter?: EspnOdds[];
 }
 
 export interface EspnGameResult {
@@ -578,14 +734,77 @@ export interface EspnGameResult {
 }
 
 /**
- * Fetch one finished game's score via ESPN's summary endpoint (keyless).
- * Returns null when the game isn't final or the shape is unexpected.
+ * One game's final score and the last price the market showed, from a single
+ * summary request.
+ *
+ * The closing line is what makes closing-line value measurable: comparing the
+ * number we took against the number the market settled on is a far
+ * lower-variance verdict on a pick than whether it happened to win.
  */
-export async function fetchGameResult(
+export interface EspnGameSnapshot {
+  gameId: string;
+  result: EspnGameResult | null;
+  closing: ClosingLine | null;
+}
+
+/** Last snapshot a priced market offers, preferring an explicit close. */
+function extractClosing(
+  gameId: string,
+  odds: EspnOdds | undefined,
+  homeAbbr: string | undefined,
+): ClosingLine | null {
+  if (!odds) return null;
+
+  const snapshotSide = (t?: EspnTeamOdds) =>
+    snapshotSpread(t?.close) ?? snapshotSpread(t?.current);
+  const homeSnap = snapshotSide(odds.homeTeamOdds);
+  const awaySnap = snapshotSide(odds.awayTeamOdds);
+
+  // Fall back to the details string, which is unambiguous about the favourite.
+  const det = parseDetails(odds.details);
+  let spread =
+    homeSnap ?? (awaySnap != null ? -awaySnap : undefined) ?? odds.spread;
+  if (det.abbr && det.line != null && homeAbbr) {
+    const lineAbs = Math.abs(det.line);
+    spread = det.abbr === homeAbbr ? -lineAbs : lineAbs;
+  }
+
+  const closeMl = (t?: EspnTeamOdds) =>
+    toAmerican(t?.close?.moneyLine?.american) ??
+    numeric(t?.close?.moneyLine?.value) ??
+    extractMoneyline(t);
+
+  const line: ClosingLine = {
+    gameId,
+    spread: spread != null && Number.isFinite(spread) ? spread : undefined,
+    total:
+      numeric(odds.homeTeamOdds?.close?.total?.value) ??
+      (odds.overUnder != null && Number.isFinite(odds.overUnder)
+        ? odds.overUnder
+        : undefined),
+    homeMoneyline: closeMl(odds.homeTeamOdds),
+    awayMoneyline: closeMl(odds.awayTeamOdds),
+  };
+
+  const empty =
+    line.spread == null &&
+    line.total == null &&
+    line.homeMoneyline == null &&
+    line.awayMoneyline == null;
+  return empty ? null : line;
+}
+
+/**
+ * Fetch one game's score and closing line via ESPN's summary endpoint
+ * (keyless). `result` is null until the game is final; `closing` can be
+ * present before then, which is fine — a line read at kickoff is the closing
+ * line for our purposes.
+ */
+export async function fetchGameSnapshot(
   league: League,
   gameId: string,
   signal: AbortSignal,
-): Promise<EspnGameResult | null> {
+): Promise<EspnGameSnapshot> {
   const data = await fetchJson<EspnSummary>(
     `https://site.api.espn.com/apis/site/v2/sports/${ESPN_PATH[league]}/summary?event=${encodeURIComponent(gameId)}`,
     signal,
@@ -593,13 +812,20 @@ export async function fetchGameResult(
   const comp = data.header?.competitions?.[0];
   const status = comp?.status?.type;
   const final = status?.completed === true || status?.state === "post";
-  if (!final) return null;
 
   const home = comp?.competitors?.find((c) => c.homeAway === "home");
   const away = comp?.competitors?.find((c) => c.homeAway === "away");
   const homeScore = Number(home?.score);
   const awayScore = Number(away?.score);
-  if (!Number.isFinite(homeScore) || !Number.isFinite(awayScore)) return null;
 
-  return { gameId, homeScore, awayScore, final: true };
+  const result: EspnGameResult | null =
+    final && Number.isFinite(homeScore) && Number.isFinite(awayScore)
+      ? { gameId, homeScore, awayScore, final: true }
+      : null;
+
+  return {
+    gameId,
+    result,
+    closing: extractClosing(gameId, data.pickcenter?.[0], home?.team?.abbreviation),
+  };
 }

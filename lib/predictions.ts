@@ -1,5 +1,5 @@
-import type { League, SgpLeg } from "@/types";
-import { americanToDecimal } from "@/lib/sgp";
+import type { ClosingLine, League, SgpLeg } from "@/types";
+import { americanToDecimal, impliedProbability } from "@/lib/sgp";
 
 /**
  * Prediction logging + scoring.
@@ -32,6 +32,9 @@ export interface PredictionRecord {
   threshold?: number;
   totalLine?: number;
 
+  /** The number we took, on its own axis: spread threshold or total line. */
+  lineAtPick?: number;
+
   // filled in once the game is final
   graded?: boolean;
   won?: boolean;
@@ -39,6 +42,15 @@ export interface PredictionRecord {
   finalHome?: number;
   finalAway?: number;
   gradedAt?: string;
+
+  // filled in once the market has closed
+  /** The line the market settled on, same axis as lineAtPick. */
+  closingLine?: number;
+  /** Points the line moved in our favour (negative = moved against us). */
+  lineValue?: number;
+  /** Change in de-vigged probability in our favour, from moneyline closes. */
+  probabilityValue?: number;
+  clvCheckedAt?: string;
 }
 
 export interface GameResult {
@@ -73,6 +85,126 @@ export function toPrediction(leg: SgpLeg): PredictionRecord | null {
     side: meta.side,
     threshold: meta.threshold,
     totalLine,
+    lineAtPick: meta.kind === "total" ? totalLine : meta.threshold,
+  };
+}
+
+/* ------------------------- closing line value ------------------------- */
+
+/**
+ * Score a pick against the number the market closed at.
+ *
+ * This is the fast feedback loop. Outcome grading asks a binary question with
+ * enormous variance — hundreds of settled picks before the signal separates
+ * from the noise. CLV asks a continuous one: we took this side at this
+ * number, where did the market end up? If we take a team at -3 and it closes
+ * -4, we beat the market on that pick, regardless of whether the game went
+ * our way. That converges in tens of picks instead of hundreds, which is what
+ * makes every other model change measurable in a reasonable timeframe.
+ */
+export function applyClosingLine(
+  p: PredictionRecord,
+  closing: ClosingLine,
+): PredictionRecord {
+  let closingLine: number | undefined;
+  let lineValue: number | undefined;
+
+  if (p.kind === "total" && closing.total != null) {
+    closingLine = closing.total;
+    // An over wants the line to have been lower than where it closed.
+    const delta = closing.total - (p.lineAtPick ?? closing.total);
+    lineValue = p.side === "under" ? -delta : delta;
+  } else if (p.kind === "margin" && closing.spread != null) {
+    // closing.spread is the HOME spread; the threshold axis is the team's own
+    // margin, so a home leg's closing threshold is -spread and an away leg's
+    // is +spread.
+    const closingThreshold =
+      p.side === "home" ? -closing.spread : closing.spread;
+    closingLine = closingThreshold;
+    // Getting a LOWER threshold than the close means we got the better number.
+    lineValue = closingThreshold - (p.lineAtPick ?? closingThreshold);
+  }
+
+  // Moneylines have no line to move, so they are scored on price instead.
+  let probabilityValue: number | undefined;
+  if (closing.homeMoneyline != null && closing.awayMoneyline != null) {
+    const raw = [
+      impliedProbability(americanToDecimal(closing.homeMoneyline)),
+      impliedProbability(americanToDecimal(closing.awayMoneyline)),
+    ];
+    const sum = raw[0] + raw[1];
+    if (sum > 0) {
+      const fairHome = raw[0] / sum;
+      const closingProb = p.side === "away" ? 1 - fairHome : fairHome;
+      // Market closing HIGHER than our entry price means we got value.
+      probabilityValue = closingProb - p.marketProbability;
+    }
+  }
+
+  if (closingLine === undefined && probabilityValue === undefined) return p;
+
+  return {
+    ...p,
+    closingLine,
+    lineValue:
+      lineValue === undefined ? undefined : Number(lineValue.toFixed(2)),
+    probabilityValue:
+      probabilityValue === undefined
+        ? undefined
+        : Number(probabilityValue.toFixed(4)),
+    clvCheckedAt: new Date().toISOString(),
+  };
+}
+
+export interface ClvScore {
+  /** Picks with a closing line to compare against. */
+  checked: number;
+  /** Share of those where the line moved toward us. */
+  beatRate: number;
+  /** Mean points of line value (positive = we got the better number). */
+  avgLineValue: number;
+  /** Mean probability value in points, from moneyline closes. */
+  avgProbabilityValue: number;
+  /** CLV is informative far sooner than outcomes — tens, not hundreds. */
+  meaningful: boolean;
+}
+
+const EMPTY_CLV: ClvScore = {
+  checked: 0,
+  beatRate: 0,
+  avgLineValue: 0,
+  avgProbabilityValue: 0,
+  meaningful: false,
+};
+
+export function scoreClv(records: PredictionRecord[]): ClvScore {
+  const withLine = records.filter((r) => r.lineValue !== undefined);
+  const withProb = records.filter((r) => r.probabilityValue !== undefined);
+  const checked = records.filter(
+    (r) => r.lineValue !== undefined || r.probabilityValue !== undefined,
+  );
+  if (checked.length === 0) return EMPTY_CLV;
+
+  // A pick "beat the close" on whichever measure it has; line movement is the
+  // more direct signal, so it wins when both are present.
+  const beat = checked.filter((r) =>
+    r.lineValue !== undefined
+      ? r.lineValue > 0
+      : (r.probabilityValue ?? 0) > 0,
+  ).length;
+
+  const mean = (xs: number[]) =>
+    xs.length === 0 ? 0 : xs.reduce((a, b) => a + b, 0) / xs.length;
+
+  return {
+    checked: checked.length,
+    beatRate: Number((beat / checked.length).toFixed(4)),
+    avgLineValue: Number(mean(withLine.map((r) => r.lineValue!)).toFixed(3)),
+    avgProbabilityValue: Number(
+      mean(withProb.map((r) => r.probabilityValue!)).toFixed(4),
+    ),
+    // Roughly an order of magnitude fewer picks than outcome grading needs.
+    meaningful: checked.length >= 20,
   };
 }
 

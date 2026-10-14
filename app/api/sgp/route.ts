@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { League, ProviderResult, SgpRecommendation } from "@/types";
 import {
   fetchEspn,
+  fetchInjuries,
   fetchTeamRest,
   fetchTeamScoring,
 } from "@/lib/providers/espn";
@@ -30,14 +31,15 @@ export async function GET() {
           .map((g) => g.league),
       ),
     ];
-    const [scoring, rest] = active.length
+    const [scoring, rest, injuries] = active.length
       ? await Promise.all([
           fetchTeamScoring(active, controller.signal),
           fetchTeamRest(active, controller.signal),
+          fetchInjuries(active, controller.signal),
         ])
-      : [{}, {}];
+      : [{}, {}, {}];
 
-    const legs = legsFromGames(games, odds, gameLinks, scoring, rest);
+    const legs = legsFromGames(games, odds, gameLinks, scoring, rest, injuries);
     if (legs.length === 0) {
       throw new Error(
         "No upcoming games with live odds are posted right now — check back closer to game time.",

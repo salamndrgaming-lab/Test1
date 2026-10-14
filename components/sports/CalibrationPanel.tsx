@@ -44,16 +44,25 @@ function Metric({
  * against the de-vigged market price.
  */
 export function CalibrationPanel() {
-  const { score, grade, pendingCount, records, clear } = usePredictions();
+  const {
+    score,
+    clv,
+    grade,
+    checkClosingLines,
+    pendingCount,
+    unpricedCount,
+    records,
+    clear,
+  } = usePredictions();
   const [checking, setChecking] = useState(false);
   const [justGraded, setJustGraded] = useState<number | null>(null);
 
-  // settle anything that has finished since the last visit
+  // settle anything that has finished, and price anything the market has closed
   useEffect(() => {
-    if (pendingCount === 0) return;
+    if (pendingCount === 0 && unpricedCount === 0) return;
     let cancelled = false;
     (async () => {
-      const n = await grade();
+      const [n] = await Promise.all([grade(), checkClosingLines()]);
       if (!cancelled && n > 0) setJustGraded(n);
     })();
     return () => {
@@ -65,7 +74,8 @@ export function CalibrationPanel() {
   const check = async () => {
     setChecking(true);
     try {
-      setJustGraded(await grade());
+      const [n] = await Promise.all([grade(), checkClosingLines()]);
+      setJustGraded(n);
     } finally {
       setChecking(false);
     }
@@ -75,6 +85,76 @@ export function CalibrationPanel() {
 
   return (
     <div className="space-y-4">
+      {/* CLV first: it's the measure that produces a verdict soonest. */}
+      <Card>
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="font-serif text-lg font-medium text-[var(--text)]">
+            Closing line value
+          </h3>
+          <span className="text-[0.7rem] text-[var(--muted-2)]">
+            the fast signal
+          </span>
+        </div>
+        <p className="mb-3 text-xs text-[var(--muted)]">
+          Did the market move toward the number we took? A side taken at −3
+          that closes −4 beat the market, whether or not the bet won. This
+          needs roughly 20 picks to mean something; win/loss records need
+          hundreds.
+        </p>
+
+        {clv.checked === 0 ? (
+          <p className="text-sm text-[var(--muted)]">
+            {records.length === 0
+              ? "No picks logged yet — open the SGP tab and the model starts keeping score automatically."
+              : `${records.length} pick${records.length === 1 ? "" : "s"} logged. Closing lines are read about an hour after each pick.`}
+          </p>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              <Metric
+                label="Beat the close"
+                value={`${(clv.beatRate * 100).toFixed(0)}%`}
+                tone={clv.beatRate > 0.5 ? "good" : "bad"}
+                sub={`of ${clv.checked} priced pick${clv.checked === 1 ? "" : "s"}`}
+                title="Share of picks where the line moved in our favour after we took it"
+              />
+              <Metric
+                label="Avg line value"
+                value={`${clv.avgLineValue >= 0 ? "+" : ""}${clv.avgLineValue.toFixed(2)}`}
+                tone={clv.avgLineValue > 0 ? "good" : "bad"}
+                sub="points of line, per pick"
+                title="Mean points the line moved toward our side between our pick and the close"
+              />
+              <Metric
+                label="Avg price value"
+                value={`${clv.avgProbabilityValue >= 0 ? "+" : ""}${(clv.avgProbabilityValue * 100).toFixed(1)}pp`}
+                tone={clv.avgProbabilityValue > 0 ? "good" : "bad"}
+                sub="de-vigged, from moneylines"
+                title="Mean change in de-vigged probability in our favour by the close"
+              />
+            </div>
+            {!clv.meaningful && (
+              <p className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[0.7rem] text-amber-200">
+                {clv.checked} priced pick{clv.checked === 1 ? "" : "s"} — still
+                thin. CLV stabilises much faster than win rate, but give it
+                ~20 before reading anything into it.
+              </p>
+            )}
+            {clv.meaningful && clv.beatRate < 0.5 && (
+              <p className="mt-3 text-[0.7rem] leading-relaxed text-[var(--muted-2)]">
+                Losing to the close is the expected result for a free-data
+                model, and it&apos;s the honest baseline: it means the market
+                knows things we don&apos;t, not that the model is broken.
+              </p>
+            )}
+          </>
+        )}
+        {unpricedCount > 0 && (
+          <p className="mt-2 text-xs text-[var(--muted-2)]">
+            {unpricedCount} awaiting a closing line.
+          </p>
+        )}
+      </Card>
       <Card>
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
           <h3 className="font-serif text-lg font-medium text-[var(--text)]">

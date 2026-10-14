@@ -13,6 +13,7 @@ export async function GET(req: NextRequest) {
     scope: (sp.get("scope") as Scope) ?? undefined,
     query: sp.get("q") ?? undefined,
     place: sp.get("place") ?? undefined,
+    level: (sp.get("level") as "metro" | "state" | null) ?? undefined,
   };
   const result = await getLive(newsProvider, params);
   return NextResponse.json(result);

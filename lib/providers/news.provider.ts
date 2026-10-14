@@ -4,12 +4,15 @@ import { scoreSentiment } from "@/lib/sentiment";
 import { parseRss, type RssItem } from "@/lib/rss";
 import { fetchText, type DataProvider } from "./withFallback";
 import { selectFeeds, PUBLISHER_FEEDS, type PublisherFeed } from "@/lib/feeds";
+import { LOCAL_FEEDS, selectLocalFeeds, type LocalFeed } from "@/lib/local-feeds";
 
 export interface NewsParams {
   category?: NewsCategory;
   scope?: Scope;
   query?: string;
   place?: string; // for scope === "local"
+  /** Local only: restrict to city newsrooms or statewide ones. */
+  level?: "metro" | "state";
 }
 
 const UA = {
@@ -144,6 +147,115 @@ async function publisherFeeds(
   return articles.slice(0, 48);
 }
 
+/* ---- Local newsrooms ---- */
+
+/**
+ * Direct feeds from newsrooms that cover the user's place, topped up with a
+ * Google News local search.
+ *
+ * Publisher feeds come first and are never dropped in favour of Google: a
+ * city newsroom's own story is better sourced, better titled and more
+ * reliably local than a search result. Google only fills the remainder, and
+ * takes over entirely if we carry nothing for the place or every feed fails.
+ */
+async function localNews(
+  params: NewsParams,
+  signal: AbortSignal,
+): Promise<Article[]> {
+  const place = params.place ?? "";
+  const matched = selectLocalFeeds(place).filter(
+    (f) => !params.level || f.level === params.level,
+  );
+
+  const settled = await Promise.allSettled(
+    matched.map((f) =>
+      fetchText(f.url, signal, UA).then((xml) => ({ f, items: parseRss(xml) })),
+    ),
+  );
+
+  const articles: Article[] = [];
+  const seen = new Set<string>();
+  const push = (a: Article) => {
+    const key = a.title.toLowerCase().slice(0, 60);
+    if (seen.has(key)) return;
+    seen.add(key);
+    articles.push(a);
+  };
+
+  for (const r of settled) {
+    if (r.status !== "fulfilled") continue;
+    const { f, items } = r.value;
+    items
+      .filter((it) => it.title && it.link)
+      .slice(0, 10)
+      .forEach((it, i) => push(localItemToArticle(it, f, articles.length + i)));
+  }
+
+  // Backstop / top-up. A statewide-only request stays on its own feeds, since
+  // a Google search for the city would pull the city coverage back in.
+  const wantGoogle =
+    params.level !== "state" && (articles.length < 24 || matched.length === 0);
+  if (wantGoogle && place) {
+    try {
+      const gn = await googleNews(
+        gnSearch(`${place} local news`),
+        { ...params, scope: "local" },
+        signal,
+      );
+      for (const a of gn) push(a);
+    } catch {
+      /* publisher feeds alone are enough when they produced anything */
+    }
+  }
+
+  if (articles.length === 0) {
+    // Distinguish "we carry nothing for this place" from "the newsrooms we do
+    // carry didn't respond" — they need different fixes.
+    throw new Error(
+      matched.length === 0
+        ? `no newsroom for ${place || "this place"} in the local directory yet`
+        : `${matched.length} local feed${matched.length === 1 ? "" : "s"} matched but none responded`,
+    );
+  }
+  articles.sort((a, b) => +new Date(b.publishedAt) - +new Date(a.publishedAt));
+  return articles.slice(0, 60);
+}
+
+function localItemToArticle(
+  it: RssItem,
+  feed: LocalFeed,
+  idx: number,
+): Article {
+  const summary = it.description || it.title;
+  return applyBias({
+    id: `lf-${feed.domain}-${idx}`,
+    title: it.title,
+    summary,
+    url: it.link,
+    imageUrl: it.image,
+    source: feed.source,
+    sourceDomain: feed.domain,
+    publishedAt: it.pubDate
+      ? new Date(it.pubDate).toISOString()
+      : new Date().toISOString(),
+    category: "local",
+    scope: "local",
+    sentiment: scoreSentiment(`${it.title} ${summary}`),
+  });
+}
+
+/**
+ * Which newsrooms we carry for a place, so the UI can name its sources
+ * before (or instead of) any article loads.
+ */
+export function localSourcesFor(place: string) {
+  return selectLocalFeeds(place).map((f) => ({
+    source: f.source,
+    domain: f.domain,
+    level: f.level,
+  }));
+}
+
 /**
  * Everything we carry from one publisher, for their outlet profile page.
  * Only outlets we actually syndicate have feeds; the caller handles the rest.
@@ -152,7 +264,20 @@ export async function fetchOutletArticles(
   domain: string,
   signal: AbortSignal,
 ): Promise<Article[]> {
-  const feeds = PUBLISHER_FEEDS.filter((f) => f.domain === domain);
+  // National publishers and local newsrooms both get an outlet page; a local
+  // feed is adapted to the same shape so the page doesn't come up empty for
+  // the newsrooms that only appear in the Local section.
+  const national = PUBLISHER_FEEDS.filter((f) => f.domain === domain);
+  const local: PublisherFeed[] = LOCAL_FEEDS.filter(
+    (f) => f.domain === domain,
+  ).map((f) => ({
+    url: f.url,
+    source: f.source,
+    domain: f.domain,
+    categories: ["local"],
+    scope: "local",
+  }));
+  const feeds = [...national, ...local];
   if (feeds.length === 0) return [];
 
   const settled = await Promise.allSettled(
@@ -187,10 +312,11 @@ export async function fetchOutletArticles(
 export const newsProvider: DataProvider<NewsParams, Article[]> = {
   name: "Publisher RSS + Google News",
   async fetchLive(params, signal) {
-    // keyword search and local feeds: Google News (publisher feeds can't search)
+    // keyword search: Google News (publisher feeds can't be searched)
     if (params.query) return googleNews(gnSearch(params.query), params, signal);
-    if (params.scope === "local" && params.place) {
-      return googleNews(gnSearch(`${params.place} local news`), params, signal);
+    // local: newsrooms that cover the place, topped up by Google News
+    if ((params.scope === "local" || params.category === "local") && params.place) {
+      return localNews(params, signal);
     }
 
     // primary: direct publisher feeds (clean source, accurate bias, images)

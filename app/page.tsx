@@ -3,6 +3,7 @@
 import Link from "next/link";
 import type { Article, Game, WeatherReport } from "@/types";
 import { useProvider } from "@/lib/useProvider";
+import { useSettings } from "@/components/SettingsProvider";
 import { Card, PageHeader, SourceBadge, Spinner, BiasBadge } from "@/components/ui";
 import { BiasSpectrum } from "@/components/charts/BiasSpectrum";
 import { FramingGap } from "@/components/news/FramingGap";
@@ -22,7 +23,17 @@ function SectionLink({ href, children }: { href: string; children: string }) {
 }
 
 export default function HomePage() {
+  const { settings } = useSettings();
+  const place = settings.defaultLocation?.place;
+
   const news = useProvider<Article[]>("/api/news?category=top");
+  // useProvider needs a URL; without a saved place the card prompts instead,
+  // so point it at a cheap request we already make.
+  const local = useProvider<Article[]>(
+    place
+      ? `/api/news?scope=local&place=${encodeURIComponent(place)}`
+      : "/api/news?category=top",
+  );
   const good = useProvider<Article[]>("/api/good-news");
   const sports = useProvider<Game[]>("/api/sports");
   const weather = useProvider<WeatherReport>("/api/weather");
@@ -30,6 +41,7 @@ export default function HomePage() {
   const top = (news.data ?? []).slice(0, 5);
   const goodTop = (good.data ?? []).slice(0, 3);
   const games = (sports.data ?? []).slice(0, 2);
+  const localTop = place ? (local.data ?? []).slice(0, 4) : [];
 
   return (
     <div style={accentVars("home")}>
@@ -47,6 +59,7 @@ export default function HomePage() {
       <div className="no-scrollbar -mx-4 mb-4 flex gap-2 overflow-x-auto px-4">
         {(
           [
+            ["/local", "⌖ Local news"],
             ["/bias", "⇄ Framing gap"],
             ["/outlet/bbc.com", "◫ Outlet profiles"],
             ["/following", "↗ Story momentum"],
@@ -115,6 +128,48 @@ export default function HomePage() {
             <SectionLink href="/bias">Explore</SectionLink>
           </div>
           {news.loading ? <Spinner /> : <BiasSpectrum articles={news.data ?? []} />}
+        </Card>
+
+        {/* Local — the newsrooms that cover where you live */}
+        <Card>
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="font-serif text-[1.05rem] font-medium text-[var(--text)]">
+              Near You
+            </h2>
+            <SectionLink href="/local">
+              {place ? "All local" : "Set location"}
+            </SectionLink>
+          </div>
+          {!place ? (
+            <p className="text-sm text-[var(--muted)]">
+              Add your location to pull headlines from the city and statewide
+              newsrooms that cover your area.
+            </p>
+          ) : local.loading ? (
+            <Spinner />
+          ) : localTop.length === 0 ? (
+            <p className="text-sm text-[var(--muted)]">
+              No local headlines right now.
+            </p>
+          ) : (
+            <ul className="space-y-2">
+              {localTop.map((a) => (
+                <li key={a.id} className="text-sm leading-snug">
+                  <a
+                    href={a.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-medium transition-colors hover:text-[var(--accent)]"
+                  >
+                    {a.title}
+                  </a>
+                  <span className="ml-1 text-xs text-[var(--muted-2)]">
+                    {a.source}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
         </Card>
 
         {/* Good news */}

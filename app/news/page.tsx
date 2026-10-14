@@ -6,7 +6,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { AdSlot } from "@/components/ads/AdSlot";
 import type { Article, BiasLean, NewsCategory, Scope } from "@/types";
 import { useProvider } from "@/lib/useProvider";
-import { useSettings } from "@/components/SettingsProvider";
 import { ArticleCard } from "@/components/news/ArticleCard";
 import { TrendingTicker } from "@/components/news/TrendingTicker";
 import {
@@ -14,7 +13,6 @@ import {
   SourceBadge,
   SkeletonCards,
   ErrorState,
-  Card,
 } from "@/components/ui";
 import { ALL_LEANS, LEAN_LABEL, LEAN_SCORE } from "@/lib/bias";
 import { classNames } from "@/lib/format";
@@ -28,7 +26,6 @@ const CATEGORIES: NewsCategory[] = [
   "science",
   "health",
   "world",
-  "local",
 ];
 
 type SortKey = "recent" | "bias-l2r" | "bias-r2l" | "positive" | "source";
@@ -37,7 +34,6 @@ function NewsInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const query = searchParams.get("q") ?? "";
-  const { settings } = useSettings();
 
   const [category, setCategory] = useState<NewsCategory>("top");
   const [scope, setScope] = useState<Scope>("national");
@@ -45,19 +41,13 @@ function NewsInner() {
   const [sort, setSort] = useState<SortKey>("recent");
   const [searchText, setSearchText] = useState(query);
 
-  const place = settings.defaultLocation?.place;
-  const needsLocation = !query && scope === "local" && !place;
-
-  // Build the API URL for the active mode.
+  // Build the API URL for the active mode. Local lives in its own section
+  // (/local), which matches the place to real city and statewide newsrooms.
   const url = useMemo(() => {
     if (query) return `/api/news?q=${encodeURIComponent(query)}`;
-    if (scope === "local")
-      return place
-        ? `/api/news?scope=local&place=${encodeURIComponent(place)}`
-        : `/api/news?category=top`; // placeholder; feed hidden by needsLocation
     if (scope === "world") return `/api/news?scope=world`;
     return `/api/news?category=${category}`;
-  }, [query, scope, place, category]);
+  }, [query, scope, category]);
 
   const { result, data, loading, error, refetch } = useProvider<Article[]>(url);
 
@@ -124,7 +114,7 @@ function NewsInner() {
       {/* Scope toggle (hidden during search) */}
       {!query && (
         <div className="mb-3 flex gap-2">
-          {(["national", "local", "world"] as Scope[]).map((s) => (
+          {(["national", "world"] as Scope[]).map((s) => (
             <button
               key={s}
               onClick={() => setScope(s)}
@@ -136,6 +126,9 @@ function NewsInner() {
               {s}
             </button>
           ))}
+          <Link href="/local" className="chip">
+            Local →
+          </Link>
         </div>
       )}
 
@@ -190,44 +183,31 @@ function NewsInner() {
         </select>
       </div>
 
-      {needsLocation ? (
-        <Card className="text-center">
-          <p className="mb-3 text-sm text-[var(--muted)]">
-            Set your location to see local headlines.
-          </p>
-          <Link href="/settings" className="btn-primary inline-block">
-            Choose location
-          </Link>
-        </Card>
-      ) : (
-        <>
-          {loading && <SkeletonCards count={6} />}
-          {!loading && error && (
-            <ErrorState
-              message={`Couldn't load live headlines. ${error}`}
-              onRetry={refetch}
-            />
-          )}
-          {!loading && !error && articles.length === 0 && (
-            <p className="py-8 text-center text-sm text-[var(--muted)]">
-              No articles match this filter.
-            </p>
-          )}
-          {!loading && !error && articles.length > 0 && (
-            <div className="animate-in grid gap-3 sm:grid-cols-2">
-              {articles.map((a, i) => (
-                <Fragment key={a.id}>
-                  <ArticleCard article={a} />
-                  {i === 5 && (
-                    <div className="sm:col-span-2">
-                      <AdSlot slot={process.env.NEXT_PUBLIC_ADSENSE_SLOT_FEED} />
-                    </div>
-                  )}
-                </Fragment>
-              ))}
-            </div>
-          )}
-        </>
+      {loading && <SkeletonCards count={6} />}
+      {!loading && error && (
+        <ErrorState
+          message={`Couldn't load live headlines. ${error}`}
+          onRetry={refetch}
+        />
+      )}
+      {!loading && !error && articles.length === 0 && (
+        <p className="py-8 text-center text-sm text-[var(--muted)]">
+          No articles match this filter.
+        </p>
+      )}
+      {!loading && !error && articles.length > 0 && (
+        <div className="animate-in grid gap-3 sm:grid-cols-2">
+          {articles.map((a, i) => (
+            <Fragment key={a.id}>
+              <ArticleCard article={a} />
+              {i === 5 && (
+                <div className="sm:col-span-2">
+                  <AdSlot slot={process.env.NEXT_PUBLIC_ADSENSE_SLOT_FEED} />
+                </div>
+              )}
+            </Fragment>
+          ))}
+        </div>
       )}
     </div>
   );

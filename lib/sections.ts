@@ -4,6 +4,7 @@ import type { CSSProperties } from "react";
 export const SECTION_ACCENTS = {
   home: ["#38bdf8", "#818cf8"],
   news: ["#38bdf8", "#3b82f6"],
+  local: ["#fb7185", "#f43f5e"],
   good: ["#22c55e", "#10b981"],
   sports: ["#f59e0b", "#fb923c"],
   weather: ["#22d3ee", "#38bdf8"],

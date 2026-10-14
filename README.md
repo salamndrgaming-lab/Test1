@@ -7,6 +7,7 @@ Built with **Next.js (App Router) + TypeScript + Tailwind CSS**. Uses **free / k
 ## Features
 
 - **News feed** — sortable by category, **political lean (left → right)**, recency, source, and tone.
+- **Local** — headlines from the newsrooms that actually cover where you live: direct RSS from city and statewide outlets matched to your saved location, with a local search as backstop. Every US state plus DC is covered.
 - **Good News** — positive-sentiment stories surfaced via a lexicon scorer.
 - **Bias & Coverage Lab** — bias spectrum, coverage spread, sentiment timeline, topic clusters, and a story-geography map.
 - **Sports** — scores, market odds + implied win-probability chart, and an interactive **SGP research tool** (6+ legs) with cited reasoning, supporting stats, references, and an **estimated-payout calculator**. _Research/education only — not betting advice._
@@ -18,7 +19,8 @@ Built with **Next.js (App Router) + TypeScript + Tailwind CSS**. Uses **free / k
 
 | Domain | Source |
 | --- | --- |
-| News | Google News RSS |
+| News | ~34 direct publisher RSS feeds (`lib/feeds.ts`), Google News RSS for search and fallback |
+| Local news | 89 city + statewide newsroom RSS feeds (`lib/local-feeds.ts`), matched to the saved location |
 | Weather | Open-Meteo (+ geocoding) |
 | Sports (scores + odds) | ESPN unofficial JSON (keyless) |
 | SGP research slip | Built live from current ESPN games + odds |
@@ -26,6 +28,8 @@ Built with **Next.js (App Router) + TypeScript + Tailwind CSS**. Uses **free / k
 | Bias | Curated outlet → lean reference dataset (`data/bias-outlets.json`) |
 
 Every section reads through a provider in `lib/providers/` wrapped by `getLive`, which calls the live source with a timeout and returns a `live` or `error` envelope. The UI shows a **Live** / **Unavailable** badge accordingly. The only bundled data file is the bias reference mapping (outlet → political lean), which is applied to real, live articles — not sample content.
+
+**Local news** (`lib/local-feeds.ts`) matches a saved location to newsrooms that cover it, at two levels: `metro` (a city newsroom — Gothamist, LAist, Block Club Chicago, Mission Local, MinnPost…) and `state` (a statewide newsroom, which every US state and DC has). A city match wins, the statewide newsroom is always appended, and feeds are de-duplicated by domain. Publisher feeds are never dropped in favour of Google — a city newsroom's own story is better sourced and more reliably local than a search result — so Google News only tops up the remainder or takes over when nothing matches. The Local page names its newsrooms up front and dims the ones that published nothing readable, so a moved feed is visible rather than silent.
 
 The **SGP research tool** builds a 6+ leg cross-game slip from real, current games and their market odds, and links each leg to the actual ESPN game page. Game-level markets are used because free/keyless sources don't expose player-prop lines.
 

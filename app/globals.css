@@ -206,6 +206,44 @@ body {
   }
 }
 
+/* ---- View transitions (progressive enhancement) ---- */
+@keyframes ns-vt-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@keyframes ns-vt-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+::view-transition-old(root) {
+  animation: ns-vt-out 160ms ease both;
+}
+::view-transition-new(root) {
+  animation: ns-vt-in 240ms ease both;
+}
+/* Keep the chrome still while the page content moves. */
+.vt-nav-top {
+  view-transition-name: ns-nav-top;
+}
+.vt-nav-bottom {
+  view-transition-name: ns-nav-bottom;
+}
+
+:root[data-reduce-motion]::view-transition-old(root),
+:root[data-reduce-motion]::view-transition-new(root) {
+  animation: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none !important;
+  }
+}
+
 /* Leaflet container needs an explicit height */
 .leaflet-container {
   height: 100%;

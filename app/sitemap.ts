@@ -1,4 +1,5 @@
 import type { MetadataRoute } from "next";
+import { PUBLISHER_FEEDS } from "@/lib/feeds";
 
 const base = process.env.NEXT_PUBLIC_APP_URL || "https://newsscope.example";
 
@@ -20,10 +21,22 @@ export default function sitemap(): MetadataRoute.Sitemap {
     ["/legal/disclaimer", 0.2],
     ["/legal/attributions", 0.2],
   ];
-  return routes.map(([path, priority]) => ({
+  const staticRoutes: MetadataRoute.Sitemap = routes.map(([path, priority]) => ({
     url: `${base}${path}`,
     lastModified: now,
     changeFrequency: priority >= 0.8 ? "daily" : "weekly",
     priority,
   }));
+
+  // One indexable profile per outlet we syndicate.
+  const outlets: MetadataRoute.Sitemap = [
+    ...new Set(PUBLISHER_FEEDS.map((f) => f.domain)),
+  ].map((domain) => ({
+    url: `${base}/outlet/${domain}`,
+    lastModified: now,
+    changeFrequency: "weekly" as const,
+    priority: 0.5,
+  }));
+
+  return [...staticRoutes, ...outlets];
 }

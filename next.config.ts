@@ -13,6 +13,10 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Native cross-document-style transitions on client-side navigations, so the
+  // PWA feels like an app rather than a website. Styled in globals.css and
+  // disabled under reduce-motion.
+  experimental: { viewTransition: true },
   images: {
     remotePatterns: [{ protocol: "https", hostname: "**" }],
   },

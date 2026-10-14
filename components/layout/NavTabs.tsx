@@ -129,7 +129,7 @@ export function NavTabs() {
   return (
     <>
       {/* Desktop / tablet top nav */}
-      <nav className="sticky top-0 z-40 hidden border-b border-[var(--border-soft)] bg-[#0a0d13]/80 backdrop-blur-xl md:block">
+      <nav className="vt-nav-top sticky top-0 z-40 hidden border-b border-[var(--border-soft)] bg-[#0a0d13]/80 backdrop-blur-xl md:block">
         <div className="mx-auto flex max-w-5xl items-center gap-1 px-4 py-3">
           <Link
             href="/"
@@ -156,7 +156,7 @@ export function NavTabs() {
       </nav>
 
       {/* Mobile bottom tab bar */}
-      <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-[var(--border-soft)] bg-[#141925]/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl md:hidden">
+      <nav className="vt-nav-bottom fixed bottom-0 left-0 right-0 z-40 border-t border-[var(--border-soft)] bg-[#141925]/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl md:hidden">
         <div className="no-scrollbar flex overflow-x-auto px-1">
           {TABS.map((t) => {
             const active = isActive(t.href);

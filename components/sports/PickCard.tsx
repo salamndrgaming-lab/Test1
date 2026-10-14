@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { SgpLeg } from "@/types";
 import { formatOdds, formatPct, classNames } from "@/lib/format";
+import { MarginCurve } from "@/components/sports/MarginCurve";
 
 const CONF_CLASS = {
   high: "bg-green-500/15 text-green-300",
@@ -76,6 +77,7 @@ export function PickCard({
   onToggle: () => void;
 }) {
   const [showWhy, setShowWhy] = useState(false);
+  const [showCurve, setShowCurve] = useState(false);
   const positive = leg.edge > 0;
 
   return (
@@ -158,14 +160,26 @@ export function PickCard({
             </span>
           </span>
         )}
+        {leg.modelMeta?.kind === "margin" && (
+          <button
+            onClick={() => setShowCurve((v) => !v)}
+            className="ml-auto text-[var(--accent)] underline underline-offset-2"
+          >
+            {showCurve ? "Hide curve" : "Model curve"}
+          </button>
+        )}
         <button
           onClick={() => setShowWhy((v) => !v)}
-          className="ml-auto text-[var(--accent)] underline underline-offset-2"
+          className={classNames(
+            "text-[var(--accent)] underline underline-offset-2",
+            leg.modelMeta?.kind !== "margin" && "ml-auto",
+          )}
         >
           {showWhy ? "Hide confidence" : "Why this confidence?"}
         </button>
       </div>
 
+      {showCurve && <MarginCurve leg={leg} />}
       {showWhy && <ConfidenceDetail leg={leg} />}
 
       <p className="mt-2 text-sm text-[var(--muted)]">{leg.rationale}</p>

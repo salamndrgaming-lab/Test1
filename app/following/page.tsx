@@ -8,7 +8,7 @@ import { useFollows } from "@/lib/useFollows";
 import { usePro } from "@/lib/usePro";
 import { groupByLean, COLUMN_LABEL, type LeanColumn } from "@/lib/blindspot";
 import { ArticleCard } from "@/components/news/ArticleCard";
-import { FollowTimeline } from "@/components/news/FollowTimeline";
+import { StoryMomentum } from "@/components/news/StoryMomentum";
 import { CoverageSpread } from "@/components/charts/CoverageSpread";
 import { UpgradeCard } from "@/components/UpgradeCard";
 import { PageHeader, Card, Spinner } from "@/components/ui";
@@ -40,11 +40,11 @@ function StoryView({ topic }: { topic: string }) {
   return (
     <div className="space-y-4">
       <Card>
-        <h3 className="mb-1 font-semibold">Coverage timeline</h3>
+        <h3 className="mb-1 font-semibold">Story momentum</h3>
         <p className="mb-3 text-xs text-[var(--muted)]">
-          How each side&apos;s coverage of &quot;{topic}&quot; has shifted.
+          Whether &quot;{topic}&quot; is growing or fading — and which side is driving it.
         </p>
-        <FollowTimeline snapshots={snapshots[topic] ?? []} />
+        <StoryMomentum snapshots={snapshots[topic] ?? []} />
       </Card>
 
       {loading ? (

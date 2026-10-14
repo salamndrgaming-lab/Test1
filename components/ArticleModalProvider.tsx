@@ -1,6 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element -- external article images */
 
+import Link from "next/link";
 import {
   createContext,
   useCallback,
@@ -111,9 +112,14 @@ export function ArticleModalProvider({ children }: { children: ReactNode }) {
             <div className="p-5">
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <BiasBadge lean={article.bias} />
-                <span className="text-xs font-medium text-[var(--muted)]">
+                <Link
+                  href={`/outlet/${article.sourceDomain}`}
+                  onClick={close}
+                  className="text-xs font-medium text-[var(--muted)] underline decoration-dotted underline-offset-2 hover:text-[var(--accent)]"
+                  title={`About ${article.source}`}
+                >
                   {syn?.siteName || article.source}
-                </span>
+                </Link>
                 <span className="ml-auto text-xs text-[var(--muted-2)]">
                   {timeAgo(article.publishedAt)}
                 </span>

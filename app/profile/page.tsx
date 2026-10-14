@@ -8,6 +8,7 @@ import { PageHeader, Card } from "@/components/ui";
 import { SignIn } from "@/components/auth/SignIn";
 import { ProGate } from "@/components/UpgradeCard";
 import { MyNewsBias } from "@/components/profile/MyNewsBias";
+import { SourceDiversity } from "@/components/profile/SourceDiversity";
 import { accentVars } from "@/lib/sections";
 import { classNames } from "@/lib/format";
 
@@ -102,6 +103,16 @@ export default function ProfilePage() {
             {isPro ? "Pro is ON" : "Turn on Pro"}
           </button>
         </div>
+      </Card>
+
+      <Card className="mt-4">
+        <h3 className="mb-1 font-semibold">Source diversity</h3>
+        <p className="mb-3 text-xs text-[var(--muted)]">
+          How many outlets you actually read — and how evenly you span the spectrum.
+        </p>
+        <ProGate isPro={isPro} feature="Source diversity score" compact>
+          <SourceDiversity />
+        </ProGate>
       </Card>
 
       <Card className="mt-4">

@@ -3,7 +3,7 @@ import { applyBias, normalizeDomain } from "@/lib/bias";
 import { scoreSentiment } from "@/lib/sentiment";
 import { parseRss, type RssItem } from "@/lib/rss";
 import { fetchText, type DataProvider } from "./withFallback";
-import { selectFeeds, type PublisherFeed } from "@/lib/feeds";
+import { selectFeeds, PUBLISHER_FEEDS, type PublisherFeed } from "@/lib/feeds";
 
 export interface NewsParams {
   category?: NewsCategory;
@@ -142,6 +142,46 @@ async function publisherFeeds(
 
   articles.sort((a, b) => +new Date(b.publishedAt) - +new Date(a.publishedAt));
   return articles.slice(0, 48);
+}
+
+/**
+ * Everything we carry from one publisher, for their outlet profile page.
+ * Only outlets we actually syndicate have feeds; the caller handles the rest.
+ */
+export async function fetchOutletArticles(
+  domain: string,
+  signal: AbortSignal,
+): Promise<Article[]> {
+  const feeds = PUBLISHER_FEEDS.filter((f) => f.domain === domain);
+  if (feeds.length === 0) return [];
+
+  const settled = await Promise.allSettled(
+    feeds
+      .slice(0, 6)
+      .map((f) =>
+        fetchText(f.url, signal, UA).then((xml) => ({ f, items: parseRss(xml) })),
+      ),
+  );
+
+  const articles: Article[] = [];
+  const seen = new Set<string>();
+  for (const r of settled) {
+    if (r.status !== "fulfilled") continue;
+    const { f, items } = r.value;
+    items
+      .filter((it) => it.title && it.link)
+      .slice(0, 12)
+      .forEach((it) => {
+        const key = it.title.toLowerCase().slice(0, 60);
+        if (seen.has(key)) return;
+        seen.add(key);
+        articles.push(
+          itemToArticle(it, f, f.categories[0] ?? "top", articles.length),
+        );
+      });
+  }
+  articles.sort((a, b) => +new Date(b.publishedAt) - +new Date(a.publishedAt));
+  return articles.slice(0, 30);
 }
 
 export const newsProvider: DataProvider<NewsParams, Article[]> = {

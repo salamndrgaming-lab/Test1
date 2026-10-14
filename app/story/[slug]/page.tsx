@@ -10,6 +10,7 @@ import {
   type LeanColumn,
 } from "@/lib/blindspot";
 import { ArticleCard } from "@/components/news/ArticleCard";
+import { FramingGap } from "@/components/news/FramingGap";
 import { CoverageSpread } from "@/components/charts/CoverageSpread";
 import { Card } from "@/components/ui";
 import { accentVars } from "@/lib/sections";
@@ -85,6 +86,16 @@ export default async function StoryPage({
           <Card className="mb-5">
             <h2 className="mb-3 font-semibold">Coverage by political lean</h2>
             <CoverageSpread articles={articles} />
+          </Card>
+
+          <Card className="mb-5">
+            <h2 className="font-serif text-lg font-medium text-[var(--text)]">
+              Framing gap
+            </h2>
+            <p className="mb-3 text-xs text-[var(--muted)]">
+              The words each side reaches for when covering this story.
+            </p>
+            <FramingGap articles={articles} />
           </Card>
 
           <div className="grid gap-3 md:grid-cols-3">

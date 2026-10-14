@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { BrandMark } from "@/components/layout/BrandMark";
 import { classNames } from "@/lib/format";
 
 type IconName =
@@ -134,9 +135,7 @@ export function NavTabs() {
             href="/"
             className="mr-3 flex items-center gap-2 text-lg font-bold tracking-tight"
           >
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-[var(--accent)] to-[var(--accent-2)] text-slate-950">
-              <Icon name="bias" className="h-4 w-4" />
-            </span>
+            <BrandMark size={28} className="shrink-0 rounded-lg" />
             News<span className="gradient-text">Scope</span>
           </Link>
           {TABS.slice(1).map((t) => (

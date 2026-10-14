@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="NewsScope">
+  <!--
+    Maskable variant: full-bleed background (the platform applies its own mask
+    shape) with the lens kept inside the 80% safe zone.
+  -->
+  <defs>
+    <clipPath id="nsm-lens">
+      <circle cx="256" cy="256" r="132"/>
+    </clipPath>
+    <linearGradient id="nsm-ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#818cf8"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" fill="#0a0d13"/>
+
+  <g clip-path="url(#nsm-lens)">
+    <rect x="100" y="100" width="116" height="312" fill="#2563eb"/>
+    <rect x="216" y="100" width="82"  height="312" fill="#e7ecf3"/>
+    <rect x="298" y="100" width="124" height="312" fill="#dc2626"/>
+  </g>
+
+  <circle cx="256" cy="256" r="132" fill="none" stroke="url(#nsm-ring)" stroke-width="22"/>
+</svg>

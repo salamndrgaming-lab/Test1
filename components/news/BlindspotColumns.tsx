@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useProvider } from "@/lib/useProvider";
 import { useFollows } from "@/lib/useFollows";
 import { ArticleCard } from "@/components/news/ArticleCard";
+import { FramingGap } from "@/components/news/FramingGap";
 import { CoverageSpread } from "@/components/charts/CoverageSpread";
 import { Spinner, ErrorState } from "@/components/ui";
 import {
@@ -84,6 +85,16 @@ export function BlindspotColumns() {
         <>
           <div className="mb-4">
             <CoverageSpread articles={data ?? []} />
+          </div>
+
+          <div className="mb-4 rounded-2xl border border-[var(--border-soft)] bg-[var(--surface-2)] p-4">
+            <h4 className="font-serif text-base font-medium text-[var(--text)]">
+              Framing gap
+            </h4>
+            <p className="mb-3 text-xs text-[var(--muted)]">
+              Not just who covers it — how each side words it.
+            </p>
+            <FramingGap articles={data ?? []} />
           </div>
           <div className="grid gap-3 md:grid-cols-3">
             {columns.map((col) => (

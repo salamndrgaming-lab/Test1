@@ -3,10 +3,10 @@ import type {
   League,
   LineMovement,
   ClosingLine,
+  CompletedGame,
   MarketOdds,
   ProbablePitcher,
   TeamInjuryReport,
-  TeamRest,
   TeamScoring,
 } from "@/types";
 import { fetchJson } from "./withFallback";
@@ -515,17 +515,13 @@ export async function fetchTeamScoring(
 }
 
 /* ------------------------------------------------------------------ *
- * Rest and back-to-backs
+ * The results window
  * ------------------------------------------------------------------ *
- * A team playing its second night in a row is measurably worse, and the effect
- * is large enough in basketball and hockey to be worth modelling. The
- * scoreboard endpoint takes a `dates` parameter, so the previous two days'
- * results tell us exactly who played and when — no schedule endpoint, and no
- * per-team requests.
+ * The scoreboard endpoint takes a `dates` parameter, so past results are
+ * available without a schedule endpoint and without per-team requests. One
+ * window serves two purposes: it is the training data for the
+ * opponent-adjusted ratings, and it is how we detect who played last night.
  */
-
-/** Leagues where games can fall on consecutive nights. */
-export const BACK_TO_BACK_LEAGUES: League[] = ["NBA", "NHL", "MLB", "NCAAB"];
 
 /** ESPN groups its schedule by US Eastern calendar date. */
 function easternDateStamp(d: Date): string {
@@ -539,70 +535,102 @@ function easternDateStamp(d: Date): string {
 }
 
 /**
- * Fold day-indexed scoreboards into rest info. `days` must be ordered most
- * recent first, so index 0 is yesterday.
+ * Pull every completed game out of one or more scoreboard payloads.
+ *
+ * This one window feeds both the ratings solve and the rest/back-to-back
+ * detection, so there is a single source of truth and far fewer requests than
+ * fetching each separately.
  */
-export function parseRest(
+export function parseCompletedGames(
   league: League,
-  days: EspnScoreboard[],
-): Record<string, TeamRest> {
-  const out: Record<string, TeamRest> = {};
-  days.forEach((board, dayIndex) => {
-    const daysAgo = dayIndex + 1;
-    for (const ev of board.events ?? []) {
-      // Only completed games count as rest consumed.
+  boards: EspnScoreboard[],
+): CompletedGame[] {
+  const out: CompletedGame[] = [];
+  const seen = new Set<string>();
+
+  for (const board of boards ?? []) {
+    for (const ev of board?.events ?? []) {
       if (ev.status?.type?.state !== "post") continue;
-      for (const c of ev.competitions?.[0]?.competitors ?? []) {
-        const id = c.team?.id;
-        if (!id) continue;
-        const key = `${league}:${id}`;
-        const prev = out[key];
-        out[key] = {
-          teamId: id,
-          daysSinceLastGame: Math.min(prev?.daysSinceLastGame ?? Infinity, daysAgo),
-          gamesInWindow: (prev?.gamesInWindow ?? 0) + 1,
-        };
+      if (seen.has(ev.id)) continue;
+      const comp = ev.competitions?.[0];
+      const home = comp?.competitors?.find((c) => c.homeAway === "home");
+      const away = comp?.competitors?.find((c) => c.homeAway === "away");
+      const homeId = home?.team?.id;
+      const awayId = away?.team?.id;
+      const homeScore = Number(home?.score);
+      const awayScore = Number(away?.score);
+      if (
+        !homeId ||
+        !awayId ||
+        !ev.date ||
+        !Number.isFinite(homeScore) ||
+        !Number.isFinite(awayScore)
+      ) {
+        continue;
       }
+      seen.add(ev.id);
+      out.push({
+        gameId: ev.id,
+        league,
+        date: ev.date,
+        homeId,
+        awayId,
+        homeScore,
+        awayScore,
+      });
     }
-  });
+  }
   return out;
 }
 
 /**
- * Rest info keyed by `${league}:${teamId}`, from the last two days of results.
- * Best-effort: leagues that fail contribute nothing and the model simply
- * applies no rest adjustment for those games.
+ * Completed games over the last `days` for each league.
+ *
+ * ESPN's scoreboard accepts a date range, which gets a whole window in one
+ * request. Ranges aren't honoured uniformly across sports, so if a range
+ * comes back looking like a single day we fall back to fetching individual
+ * days — capped, because this runs inside a request budget.
  */
-export async function fetchTeamRest(
+export async function fetchResultsWindow(
   leagues: League[],
   signal: AbortSignal,
+  days = 30,
   now: Date = new Date(),
-): Promise<Record<string, TeamRest>> {
-  const relevant = leagues.filter((l) => BACK_TO_BACK_LEAGUES.includes(l));
-  if (relevant.length === 0) return {};
+): Promise<CompletedGame[]> {
+  const DAY = 86_400_000;
+  const FALLBACK_DAYS = 8;
 
-  const stamps = [1, 2].map((back) =>
-    easternDateStamp(new Date(now.getTime() - back * 86_400_000)),
-  );
+  const board = (league: League, dates: string) =>
+    fetchJson<EspnScoreboard>(
+      `https://site.api.espn.com/apis/site/v2/sports/${ESPN_PATH[league]}/scoreboard?dates=${dates}`,
+      signal,
+    ).catch(() => ({}) as EspnScoreboard);
 
-  const results = await Promise.allSettled(
-    relevant.map(async (league) => {
-      const boards = await Promise.all(
-        stamps.map((stamp) =>
-          fetchJson<EspnScoreboard>(
-            `https://site.api.espn.com/apis/site/v2/sports/${ESPN_PATH[league]}/scoreboard?dates=${stamp}`,
-            signal,
-          ).catch(() => ({}) as EspnScoreboard),
-        ),
+  const perLeague = await Promise.allSettled(
+    leagues.map(async (league) => {
+      const from = easternDateStamp(new Date(now.getTime() - days * DAY));
+      const to = easternDateStamp(new Date(now.getTime() - DAY));
+      const ranged = parseCompletedGames(league, [
+        await board(league, `${from}-${to}`),
+      ]);
+
+      // A range that worked spans many dates; one date means it was ignored.
+      const distinctDates = new Set(ranged.map((g) => g.date.slice(0, 10)));
+      if (distinctDates.size > 2) return ranged;
+
+      const stamps = Array.from({ length: FALLBACK_DAYS }, (_, i) =>
+        easternDateStamp(new Date(now.getTime() - (i + 1) * DAY)),
       );
-      return { league, boards };
+      const boards = await Promise.all(stamps.map((s) => board(league, s)));
+      const daily = parseCompletedGames(league, boards);
+      // Keep whichever window gave us more to work with.
+      return daily.length >= ranged.length ? daily : ranged;
     }),
   );
 
-  const out: Record<string, TeamRest> = {};
-  for (const r of results) {
-    if (r.status !== "fulfilled") continue;
-    Object.assign(out, parseRest(r.value.league, r.value.boards));
+  const out: CompletedGame[] = [];
+  for (const r of perLeague) {
+    if (r.status === "fulfilled") out.push(...r.value);
   }
   return out;
 }

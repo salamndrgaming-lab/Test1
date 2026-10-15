@@ -3,9 +3,10 @@ import type { League, ProviderResult, SgpRecommendation } from "@/types";
 import {
   fetchEspn,
   fetchInjuries,
-  fetchTeamRest,
+  fetchResultsWindow,
   fetchTeamScoring,
 } from "@/lib/providers/espn";
+import { buildAllRatings, restFromResults } from "@/lib/ratings";
 import { buildRecommendation, legsFromGames } from "@/lib/sgp";
 
 export const dynamic = "force-dynamic";
@@ -31,15 +32,28 @@ export async function GET() {
           .map((g) => g.league),
       ),
     ];
-    const [scoring, rest, injuries] = active.length
+    const [scoring, results, injuries] = active.length
       ? await Promise.all([
           fetchTeamScoring(active, controller.signal),
-          fetchTeamRest(active, controller.signal),
+          fetchResultsWindow(active, controller.signal),
           fetchInjuries(active, controller.signal),
         ])
-      : [{}, {}, {}];
+      : [{}, [], {}];
 
-    const legs = legsFromGames(games, odds, gameLinks, scoring, rest, injuries);
+    // One results window feeds both the ratings solve and rest detection.
+    const asOf = Date.now();
+    const { ratings } = buildAllRatings(results, asOf);
+    const rest = restFromResults(results, asOf);
+
+    const legs = legsFromGames(
+      games,
+      odds,
+      gameLinks,
+      scoring,
+      rest,
+      injuries,
+      ratings,
+    );
     if (legs.length === 0) {
       throw new Error(
         "No upcoming games with live odds are posted right now — check back closer to game time.",

@@ -166,6 +166,35 @@ export interface ClosingLine {
   awayMoneyline?: number;
 }
 
+/** One completed game, the raw input to the ratings solve. */
+export interface CompletedGame {
+  gameId: string;
+  league: League;
+  /** ISO timestamp of the game. */
+  date: string;
+  homeId: string;
+  awayId: string;
+  homeScore: number;
+  awayScore: number;
+}
+
+/**
+ * Opponent-adjusted ratings for one team, in points per game relative to
+ * league average. `net` is offense minus defense, so a projected margin is
+ * `net(home) - net(away) + homeEdge`.
+ */
+export interface TeamRating {
+  teamId: string;
+  /** Points scored above league average, schedule-adjusted. */
+  offense: number;
+  /** Points conceded above league average (negative is good). */
+  defense: number;
+  net: number;
+  games: number;
+  /** Games played, after recency decay — what shrinkage is based on. */
+  effectiveGames: number;
+}
+
 /** Season scoring rates for one team, used by the margin and totals models. */
 export interface TeamScoring {
   teamId: string;

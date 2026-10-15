@@ -6,6 +6,7 @@ import type {
   MarketOdds,
   ProbablePitcher,
   TeamInjuryReport,
+  TeamRating,
   TeamRest,
   TeamScoring,
   SgpConfidenceFactor,
@@ -14,6 +15,7 @@ import type {
   SgpRecommendation,
 } from "@/types";
 import { formatOdds } from "@/lib/format";
+import { RATING_PARAMS } from "@/lib/ratings";
 import {
   intervalProbability,
   lineProbability,
@@ -32,7 +34,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "dist-v4";
+export const MODEL_VERSION = "srs-v5";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -75,6 +77,69 @@ export function removeVig(rawImplied: number[]): {
   const sum = rawImplied.reduce((a, b) => a + b, 0);
   if (sum <= 0) return { fair: rawImplied, vig: 0 };
   return { fair: rawImplied.map((p) => p / sum), vig: sum - 1 };
+}
+
+/**
+ * Shin's method for removing the bookmaker's margin.
+ *
+ * Proportional normalization (`removeVig`) strips the same *relative* margin
+ * from every outcome. Books don't price that way: they load more margin onto
+ * longshots, which is the favourite-longshot bias. So proportional de-vigging
+ * systematically overstates a longshot's fair probability and understates a
+ * heavy favourite's — and since we compare our model against these numbers to
+ * compute edge, that bias becomes phantom edge on exactly the heavy-favourite
+ * moneylines a parlay is built from.
+ *
+ * Shin models the margin as the book protecting itself against a share `z` of
+ * informed money, which gives
+ *
+ *     p_i = [sqrt(z^2 + 4(1-z) * pi_i^2 / S) - z] / (2(1-z))
+ *
+ * where `pi_i` are the raw implied probabilities and `S` their sum. We solve
+ * for the `z` that makes the fair probabilities sum to 1 by bisection, which
+ * is simple, always converges on this monotone function, and generalizes past
+ * two outcomes.
+ */
+export function removeVigShin(rawImplied: number[]): {
+  fair: number[];
+  vig: number;
+  /** Estimated share of informed money. 0 reduces to proportional. */
+  z: number;
+} {
+  const S = rawImplied.reduce((a, b) => a + b, 0);
+  if (S <= 0 || rawImplied.length < 2) {
+    return { fair: rawImplied, vig: 0, z: 0 };
+  }
+  // No margin to remove (or a negative one) — nothing to do.
+  if (S <= 1) return { fair: rawImplied.map((p) => p / S), vig: S - 1, z: 0 };
+
+  const fairFor = (z: number) =>
+    rawImplied.map((pi) => {
+      const inner = z * z + (4 * (1 - z) * pi * pi) / S;
+      return (Math.sqrt(Math.max(0, inner)) - z) / (2 * (1 - z));
+    });
+
+  // The sum falls monotonically in z (at z = 0 it is sqrt(S) > 1), so bisect
+  // on the signed error to find the z that makes it exactly 1.
+  let lo = 0;
+  let hi = 0.5;
+  let z = 0;
+  for (let i = 0; i < 60; i++) {
+    z = (lo + hi) / 2;
+    const sum = fairFor(z).reduce((a, b) => a + b, 0);
+    if (sum > 1) lo = z;
+    else hi = z;
+    if (Math.abs(sum - 1) < 1e-12) break;
+  }
+
+  const fair = fairFor(z);
+  // Renormalize away the last of the bisection residual.
+  const sum = fair.reduce((a, b) => a + b, 0);
+  return {
+    fair: sum > 0 ? fair.map((p) => p / sum) : fair,
+    vig: S - 1,
+    z: Number(z.toFixed(6)),
+  };
 }
 
 /** Expected value per $1 staked at these odds, given a true probability. */
@@ -211,6 +276,12 @@ export const LEAGUE_MODEL: Record<League, LeagueModel> = {
 export const MAX_MODEL_WEIGHT = 0.35;
 
 /**
+ * Season points for/against, with no adjustment for who you played. Strictly
+ * weaker than the opponent-adjusted ratings, so it votes less.
+ */
+export const MAX_SCORING_WEIGHT = 0.28;
+
+/**
  * A win%-only prior (no scoring data) is materially weaker than a points
  * for/against one — two 10-6 teams can have opposite point differentials — so
  * it gets a smaller vote.
@@ -219,6 +290,29 @@ export const MAX_RECORD_WEIGHT = 0.2;
 
 /** Totals are the sharpest market of the three, so we lean on it hardest. */
 export const MAX_TOTAL_WEIGHT = 0.3;
+
+/**
+ * Margin variance scales with the scoring environment.
+ *
+ * A league-constant sigma says a 240-total basketball game has the same
+ * margin spread as a 205-total one, which cannot be right: more possessions
+ * means more variance. Scaling by sqrt(total / leagueAvg) is the natural
+ * first-order correction — variance grows roughly linearly in possessions, so
+ * the standard deviation grows with its square root.
+ *
+ * The count-model sports (hockey, baseball) get this for free, because a
+ * Skellam's variance is the sum of its lambdas. This is for the rest.
+ */
+export function effectiveSigma(league: League, total: number | null): number {
+  const lm = LEAGUE_MODEL[league];
+  if (!lm) return 1;
+  if (total == null || !Number.isFinite(total) || total <= 0) {
+    return lm.marginSigma;
+  }
+  const ratio = Math.sqrt(total / lm.avgTotal);
+  // Clamped: a wild posted total shouldn't be able to distort every price.
+  return lm.marginSigma * clamp(ratio, 0.85, 1.2);
+}
 
 /**
  * Leagues whose spread is a true point spread priced at the standard -110.
@@ -273,12 +367,14 @@ export interface GameModel {
   blendedMargin: number;
   /** Weight given to our model (0..MAX_MODEL_WEIGHT). */
   modelWeight: number;
-  /** Which inputs produced modelMargin. */
-  marginBasis: "scoring" | "record" | "market";
+  /** Which inputs produced modelMargin, best first. */
+  marginBasis: "ratings" | "scoring" | "record" | "market";
   /** De-vigged market probability that the home team wins. */
   marketHomeWinProb: number;
   /** Book margin on the moneyline (0 when unavailable). */
   vig: number;
+  /** Shin's estimated share of informed money behind that margin. */
+  shinZ: number;
   /** Games played by the less-established team (drives shrinkage). */
   sampleGames: number;
 
@@ -374,26 +470,91 @@ function projectScores(
   };
 }
 
+/**
+ * Projected scores from opponent-adjusted ratings.
+ *
+ * The decomposition is additive in deviations from league average, so each
+ * side's expected output is `avg/2 + own offense + opponent defense`, plus the
+ * home split. Because the margin is `net(home) - net(away) + homeEdge` by
+ * construction, this is the same arithmetic the totals projection uses — one
+ * solve, two consistent markets.
+ */
+function projectFromRatings(
+  home: TeamRating,
+  away: TeamRating,
+  lm: LeagueModel,
+  pitchers?: { home?: ProbablePitcher; away?: ProbablePitcher },
+  homeScoring?: TeamScoring,
+  awayScoring?: TeamScoring,
+) {
+  const base = lm.avgTotal / 2;
+  let homeDefence = away.defense;
+  let awayDefence = home.defense;
+
+  // Baseball: the listed starter replaces most of the opponent's season-long
+  // defensive rating, for the same reason as in projectScores.
+  const pitcherDefence = (
+    starter: ProbablePitcher | undefined,
+    teamDefence: number,
+    teamScoring: TeamScoring | undefined,
+  ): number => {
+    if (starter?.era == null || !Number.isFinite(starter.era)) return teamDefence;
+    const starterRuns = starter.era * UNEARNED_RUN_FACTOR;
+    // Express the starter on the same deviation-from-average scale.
+    const starterDeviation = starterRuns - base;
+    const fallback = teamScoring
+      ? teamScoring.pointsAgainstPerGame - base
+      : teamDefence;
+    return (
+      STARTER_SHARE * starterDeviation +
+      (1 - STARTER_SHARE) * (teamDefence || fallback)
+    );
+  };
+
+  homeDefence = pitcherDefence(pitchers?.away, away.defense, awayScoring);
+  awayDefence = pitcherDefence(pitchers?.home, home.defense, homeScoring);
+
+  return {
+    projHome: Number(
+      (base + home.offense + homeDefence + lm.homeEdge / 2).toFixed(3),
+    ),
+    projAway: Number(
+      (base + away.offense + awayDefence - lm.homeEdge / 2).toFixed(3),
+    ),
+  };
+}
+
 export function buildGameModel(
   game: Game,
   odds: MarketOdds,
   scoring: Record<string, TeamScoring> = {},
   rest: Record<string, TeamRest> = {},
   injuries: Record<string, TeamInjuryReport> = {},
+  ratings: Record<string, TeamRating> = {},
 ): GameModel | null {
   const lm = LEAGUE_MODEL[game.league];
   if (!lm) return null;
-  const { marginSigma: sigma, totalSigma } = lm;
+  const { totalSigma } = lm;
+
+  // Margin spread follows the scoring environment rather than a constant.
+  const sigma = effectiveSigma(
+    game.league,
+    odds.total != null && Number.isFinite(odds.total) ? odds.total : null,
+  );
 
   // --- market view -------------------------------------------------
   let marketHomeWinProb = 0.5;
   let vig = 0;
+  let shinZ = 0;
   if (odds.homeMoneyline != null && odds.awayMoneyline != null) {
     const rawHome = impliedProbability(americanToDecimal(odds.homeMoneyline));
     const rawAway = impliedProbability(americanToDecimal(odds.awayMoneyline));
-    const dv = removeVig([rawHome, rawAway]);
+    // Shin rather than proportional: the latter overstates longshots, which
+    // would show up as phantom edge on heavy favourites.
+    const dv = removeVigShin([rawHome, rawAway]);
     marketHomeWinProb = dv.fair[0];
     vig = dv.vig;
+    shinZ = dv.z;
   }
 
   // The posted spread IS the market's projected margin — prefer it when
@@ -427,7 +588,43 @@ export function buildGameModel(
       ? { home: game.home.probablePitcher, away: game.away.probablePitcher }
       : undefined;
 
-  if (haveScoring) {
+  const homeRating = ratings[`${game.league}:${game.home.id}`];
+  const awayRating = ratings[`${game.league}:${game.away.id}`];
+  const haveRatings =
+    homeRating != null &&
+    awayRating != null &&
+    homeRating.effectiveGames >= 2 &&
+    awayRating.effectiveGames >= 2;
+
+  if (haveRatings) {
+    // Opponent-adjusted ratings: the same offense/defense pair produces the
+    // margin and the total, so the two can't contradict each other, and
+    // strength of schedule is already divided out.
+    sampleGames = Math.min(
+      homeRating.effectiveGames,
+      awayRating.effectiveGames,
+    );
+    const { projHome, projAway } = projectFromRatings(
+      homeRating,
+      awayRating,
+      lm,
+      pitchers,
+      homeScore,
+      awayScore,
+    );
+    modelMargin = projHome - projAway;
+    modelTotal = projHome + projAway;
+    marginBasis = "ratings";
+    maxWeight = MAX_MODEL_WEIGHT;
+    scoringDetail = {
+      homeFor: Number((lm.avgTotal / 2 + homeRating.offense).toFixed(2)),
+      homeAgainst: Number((lm.avgTotal / 2 + homeRating.defense).toFixed(2)),
+      awayFor: Number((lm.avgTotal / 2 + awayRating.offense).toFixed(2)),
+      awayAgainst: Number((lm.avgTotal / 2 + awayRating.defense).toFixed(2)),
+      projHome,
+      projAway,
+    };
+  } else if (haveScoring) {
     // Points for/against beats win% on both counts: it separates teams with
     // identical records, and it is the only input that yields a total.
     sampleGames = Math.min(homeScore.gamesPlayed, awayScore.gamesPlayed);
@@ -440,7 +637,7 @@ export function buildGameModel(
     modelMargin = projHome - projAway;
     modelTotal = projHome + projAway;
     marginBasis = "scoring";
-    maxWeight = MAX_MODEL_WEIGHT;
+    maxWeight = MAX_SCORING_WEIGHT;
     scoringDetail = {
       homeFor: homeScore.pointsForPerGame,
       homeAgainst: homeScore.pointsAgainstPerGame,
@@ -507,7 +704,18 @@ export function buildGameModel(
   }
 
   // --- blend with shrinkage ---------------------------------------
-  const shrink = sampleGames / (sampleGames + lm.priorGames);
+  // The prior has to match the units the sample is measured in. A ratings
+  // sample is in recency-weighted effective games, which is always a smaller
+  // number than a raw season game count — with a 30-day half-life even a full
+  // season settles around 20. Shrinking it against a prior tuned for raw
+  // counts would under-weight the better basis, and the ratings have already
+  // been shrunk toward league average inside the solve, so this second step
+  // only needs to be mild.
+  const prior =
+    marginBasis === "ratings"
+      ? (RATING_PARAMS[game.league]?.priorGames ?? lm.priorGames)
+      : lm.priorGames;
+  const shrink = sampleGames / (sampleGames + prior);
   const modelWeight =
     modelMargin === null ? 0 : maxWeight * shrink * infoQuality;
   const blendedMargin =
@@ -572,6 +780,7 @@ export function buildGameModel(
     marginBasis,
     marketHomeWinProb,
     vig,
+    shinZ,
     sampleGames,
     marketTotal,
     modelTotal:
@@ -759,7 +968,9 @@ export function computeConfidence(opts: {
         label: "Sample size",
         value: Number(sample.toFixed(2)),
         note:
-          basis === "scoring"
+          basis === "ratings"
+            ? `${sampleGames.toFixed(1)} recency-weighted games behind the ratings`
+            : basis === "scoring"
             ? `${sampleGames} games of scoring data behind the projection`
             : `${sampleGames} games of record behind the prior`,
       },
@@ -834,7 +1045,11 @@ function makeLeg(input: LegInput): SgpLeg {
   const movement = readMovement(input.gm, input.meta);
   const conf = computeConfidence({
     sampleGames: input.gm.sampleGames,
-    priorGames: LEAGUE_MODEL[input.game.league].priorGames,
+    priorGames:
+      input.gm.marginBasis === "ratings"
+        ? (RATING_PARAMS[input.game.league]?.priorGames ??
+           LEAGUE_MODEL[input.game.league].priorGames)
+        : LEAGUE_MODEL[input.game.league].priorGames,
     modelProb: input.modelProb,
     marketProb: input.marketProb,
     vig: input.gm.vig,
@@ -915,6 +1130,7 @@ export function legsFromGames(
   scoring: Record<string, TeamScoring> = {},
   rest: Record<string, TeamRest> = {},
   injuries: Record<string, TeamInjuryReport> = {},
+  ratings: Record<string, TeamRating> = {},
 ): SgpLeg[] {
   const oddsByGame = new Map(odds.map((o) => [o.gameId, o]));
   const legs: SgpLeg[] = [];
@@ -923,7 +1139,7 @@ export function legsFromGames(
     if (g.status === "final") continue;
     const o = oddsByGame.get(g.id);
     if (!o) continue;
-    const gm = buildGameModel(g, o, scoring, rest, injuries);
+    const gm = buildGameModel(g, o, scoring, rest, injuries, ratings);
     if (!gm) continue;
 
     const lm = LEAGUE_MODEL[g.league];
@@ -942,11 +1158,13 @@ export function legsFromGames(
     const basisStat = {
       label: "Basis",
       value:
-        gm.marginBasis === "scoring"
-          ? `scoring rates · ${gm.sampleGames} games`
-          : gm.marginBasis === "record"
-            ? `season record · ${gm.sampleGames} games`
-            : "market only",
+        gm.marginBasis === "ratings"
+          ? `adjusted ratings · ${gm.sampleGames.toFixed(1)} eff. games`
+          : gm.marginBasis === "scoring"
+            ? `scoring rates · ${gm.sampleGames} games`
+            : gm.marginBasis === "record"
+              ? `season record · ${gm.sampleGames} games`
+              : "market only",
     };
 
     // ---- Moneyline: evaluate BOTH sides, keep the better value ----
@@ -1177,6 +1395,7 @@ export function legsFromGames(
                   label: "Model",
                   value: `${(best.model * 100).toFixed(1)}%`,
                 },
+                basisStat,
               ]
             : [
                 { label: "Total", value: String(line) },
@@ -1377,11 +1596,13 @@ export function buildRecommendation(
 
   const basisCounts = legs.reduce<Record<string, number>>((acc, l) => {
     const b = l.supportingStats.find((s) => s.label === "Basis")?.value ?? "";
-    const key = b.startsWith("scoring")
-      ? "scoring"
-      : b.startsWith("season")
-        ? "record"
-        : "market";
+    const key = b.startsWith("adjusted")
+      ? "ratings"
+      : b.startsWith("scoring")
+        ? "scoring"
+        : b.startsWith("season")
+          ? "record"
+          : "market";
     acc[key] = (acc[key] ?? 0) + 1;
     return acc;
   }, {});
@@ -1420,6 +1641,10 @@ export function buildRecommendation(
       detail: families.length ? families.join(" + ") : "—",
     },
     {
+      label: "Schedule-adjusted",
+      detail: `${basisCounts.ratings ?? 0}/${legs.length} legs`,
+    },
+    {
       label: "Push risk priced",
       detail: `${legs.filter((l) => (l.modelMeta?.pushProbability ?? 0) > 0.005).length} legs`,
     },
@@ -1440,16 +1665,18 @@ export function buildRecommendation(
   ];
 
   const notes: string[] = [
-    `Model ${MODEL_VERSION}: one projected margin and one projected total per game, built from season points for/against (shrunk toward the de-vigged market by at most ${Math.round(MAX_MODEL_WEIGHT * 100)}% on the margin and ${Math.round(MAX_TOTAL_WEIGHT * 100)}% on the total). Games without scoring data fall back to a log5 record prior capped at ${Math.round(MAX_RECORD_WEIGHT * 100)}%.`,
+    `Model ${MODEL_VERSION}: one projected margin and one projected total per game, from opponent-adjusted team ratings — an offense/defense pair solved from recent results so strength of schedule is divided out, with each game weighted by how recently it was played. Because the margin is net(home) − net(away) + home edge by construction, it is the same arithmetic the total uses, so the two markets can't contradict each other. Shrunk toward the de-vigged market by at most ${Math.round(MAX_MODEL_WEIGHT * 100)}% on the margin and ${Math.round(MAX_TOTAL_WEIGHT * 100)}% on the total; games with no results window fall back to unadjusted scoring rates (${Math.round(MAX_SCORING_WEIGHT * 100)}%), then a log5 record prior (${Math.round(MAX_RECORD_WEIGHT * 100)}%), then the market alone.`,
+    "The book's margin is removed with Shin's method rather than by proportional normalization. Books load more margin onto longshots, so splitting it evenly overstates a longshot's fair price and understates a heavy favourite's — which would read as free edge on exactly the short moneylines a parlay is built from.",
+    "Margin spread scales with the posted total rather than being a league constant: more scoring means more variance. The count-model sports get this automatically, since a Poisson difference takes its variance from the projected scores.",
     `Each sport is priced on its own distribution${families.length ? ` (${families.join(", ")})` : ""}, not a single normal curve: hockey and baseball margins are a difference of two Poissons, football margins are reweighted toward the key numbers 3 and 7, and basketball uses a discretized normal. Every distribution is discrete, so a line that can be landed on exactly carries real push mass and the published probability is conditional on not pushing.`,
     "Injuries are detected but never quantified. We can't tell a starter from a third-stringer from this feed, so a team with players out reduces how much the model's own view counts rather than moving the projection — the model defers to the market precisely where it is least informed.",
     "Probabilities are compared against de-vigged market prices, so the book's margin is never counted as edge.",
     "Line movement since the market opened is reported and folded into confidence, but never into the probability: the current price already contains it, so adding it again would double-count the same information.",
     "Back-to-backs are read from the last two days of results and applied inside our projection (NBA/NCAAB ~1.5-1.8 pts, NHL ~0.2 goals), so a rested team is never credited twice.",
   ];
-  if (basisCounts.scoring) {
+  if (basisCounts.ratings || basisCounts.scoring) {
     notes.push(
-      `${basisCounts.scoring} of ${legs.length} legs are backed by scoring rates; ${basisCounts.record ?? 0} by season record alone and ${basisCounts.market ?? 0} by the market only.`,
+      `${basisCounts.ratings ?? 0} of ${legs.length} legs are backed by schedule-adjusted ratings, ${basisCounts.scoring ?? 0} by unadjusted scoring rates, ${basisCounts.record ?? 0} by season record alone and ${basisCounts.market ?? 0} by the market only.`,
     );
   }
   const ev = expectedValue(adjusted, combinedDecimalOdds);

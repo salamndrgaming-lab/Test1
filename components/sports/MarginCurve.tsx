@@ -1,8 +1,9 @@
 import type { SgpLeg } from "@/types";
 import { LEAGUE_MODEL } from "@/lib/sgp";
 import {
-  marginDistribution,
-  totalDistribution,
+  buildScoreGrid,
+  gridMarginDist,
+  gridTotalDist,
   type DiscreteDist,
 } from "@/lib/distributions";
 
@@ -41,13 +42,18 @@ export function MarginCurve({ leg }: { leg: SgpLeg }) {
     const m = meta.blendedMargin ?? 0;
     const isHome = meta.side === "home";
     shape = {
-      dist: marginDistribution({
-        league: leg.league,
-        mean: m,
-        sd: meta.sigma,
-        lambdaHome: meta.lambdaHome,
-        lambdaAway: meta.lambdaAway,
-      }),
+      // Marginalized from the same joint score grid the model priced with.
+      dist: gridMarginDist(
+        buildScoreGrid({
+          league: leg.league,
+          margin: m,
+          total: meta.gridTotal ?? m,
+          marginSd: meta.sigma,
+          totalSd: meta.totalSigma ?? meta.sigma,
+          lambdaHome: meta.lambdaHome,
+          lambdaAway: meta.lambdaAway,
+        }),
+      ),
       // Both constraints are expressed on the HOME margin axis.
       boundary: isHome ? (meta.threshold ?? 0) : -(meta.threshold ?? 0),
       winAbove: isHome,
@@ -68,15 +74,17 @@ export function MarginCurve({ leg }: { leg: SgpLeg }) {
     meta.totalLine != null
   ) {
     shape = {
-      dist: totalDistribution({
-        league: leg.league,
-        mean: meta.blendedMargin ?? 0,
-        sd: meta.sigma ?? 1,
-        lambdaHome: meta.lambdaHome,
-        lambdaAway: meta.lambdaAway,
-        totalMean: meta.totalMean,
-        totalSd: meta.totalSigma,
-      }),
+      dist: gridTotalDist(
+        buildScoreGrid({
+          league: leg.league,
+          margin: meta.gridMargin ?? 0,
+          total: meta.totalMean,
+          marginSd: meta.sigma ?? 1,
+          totalSd: meta.totalSigma,
+          lambdaHome: meta.lambdaHome,
+          lambdaAway: meta.lambdaAway,
+        }),
+      ),
       boundary: meta.totalLine,
       winAbove: meta.side !== "under",
       caption: (

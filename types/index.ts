@@ -166,6 +166,22 @@ export interface ClosingLine {
   awayMoneyline?: number;
 }
 
+/**
+ * Forecast conditions at kickoff for an outdoor game. Only populated for
+ * open-roof NFL and MLB venues.
+ */
+export interface GameWeather {
+  gameId: string;
+  venue: string;
+  tempF?: number;
+  windMph: number;
+  gustMph?: number;
+  precipInches?: number;
+  precipChance?: number;
+  /** The forecast hour we actually read, for display. */
+  forecastFor: string;
+}
+
 /** One completed game, the raw input to the ratings solve. */
 export interface CompletedGame {
   gameId: string;
@@ -246,6 +262,12 @@ export interface SgpLegModelMeta {
   /** Projected scores, for the count-model sports — rebuilds the distribution. */
   lambdaHome?: number;
   lambdaAway?: number;
+  /**
+   * The game's projected margin and total, carried on every leg so the slip
+   * can rebuild the joint score grid and price same-game combinations exactly.
+   */
+  gridMargin?: number;
+  gridTotal?: number;
   /** Which distribution family priced this leg. */
   family?: "skellam" | "key-number" | "normal" | "poisson";
   /** P(landing exactly on the line). Zero for half-point lines. */

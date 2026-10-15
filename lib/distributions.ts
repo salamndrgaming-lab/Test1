@@ -132,6 +132,13 @@ const NCAAF_KEY_WEIGHTS = { ...dampen(NFL_KEY_WEIGHTS, 0.6), 0: 0 };
 
 export type Family = "skellam" | "key-number" | "normal" | "poisson";
 
+/**
+ * How much team strength carries into overtime. Low on purpose: overtime is a
+ * short sample conditioned on the teams being level, so it is much closer to a
+ * coin flip than the full-game win probability suggests.
+ */
+export const OVERTIME_SKILL_WEIGHT = 0.35;
+
 export interface DiscreteDist {
   family: Family;
   /** Inclusive support bounds. */
@@ -203,39 +210,6 @@ function makeDist(
     },
     support: () => p.map((prob, i) => ({ k: lo + i, p: prob })),
   };
-}
-
-/* ------------------------------------------------------------------ *
- * Ties
- * ------------------------------------------------------------------ */
-
-/**
- * Hockey, baseball and basketball games cannot end level — overtime decides
- * them — but a Skellam or a normal happily puts mass on a zero margin. That
- * mass has to go somewhere, or P(home wins) + P(away wins) won't be 1.
- *
- * We split it between ±1 in proportion to each side's chance of winning
- * outright, which treats overtime as a contest the better team is slightly
- * more likely to win rather than a pure coin flip.
- */
-function redistributeTies(dist: DiscreteDist): DiscreteDist {
-  const pTie = dist.at(0);
-  if (pTie <= 0) return dist;
-
-  const pHome = dist.above(0);
-  const pAway = dist.below(0);
-  const denom = pHome + pAway;
-  const homeShare = denom > 0 ? pHome / denom : 0.5;
-
-  const weights: number[] = [];
-  for (let k = dist.lo; k <= dist.hi; k++) {
-    let w = dist.at(k);
-    if (k === 0) w = 0;
-    if (k === 1) w += pTie * homeShare;
-    if (k === -1) w += pTie * (1 - homeShare);
-    weights.push(w);
-  }
-  return makeDist(dist.family, dist.lo, weights);
 }
 
 /* ------------------------------------------------------------------ *
@@ -329,50 +303,307 @@ export function discreteNormalDist(
   );
 }
 
-export interface MarginInputs {
+/* ------------------------------------------------------------------ *
+ * The joint score distribution
+ * ------------------------------------------------------------------ *
+ * Modelling the margin and the total as two separate distributions leaves
+ * three things wrong:
+ *
+ *  1. **Parity.** A margin and a total are not independent even when they are
+ *     uncorrelated: `h - a` and `h + a` are always both even or both odd. A
+ *     total of 6 with a margin of 1 is impossible. Multiplying two separate
+ *     distributions happily assigns probability to combinations that cannot
+ *     occur, which matters most in the low-scoring sports where a parlay might
+ *     actually pair a puck line with a total.
+ *  2. **Correlation.** Where the two really are correlated, independence is
+ *     simply wrong.
+ *  3. **Team totals.** They aren't expressible at all without a per-side
+ *     distribution. (The grid supports them; we don't emit those legs because
+ *     no free source prices that market, and a leg with no price can't be
+ *     checked for edge.)
+ *
+ * So the primitive is a grid over (homeScore, awayScore). Every market is read
+ * off that one object by marginalizing, which makes them consistent by
+ * construction rather than by convention.
+ */
+
+export interface ScoreGrid {
+  family: Family;
+  loHome: number;
+  loAway: number;
+  rowsHome: number;
+  colsAway: number;
+  /** Flattened row-major pmf over (home, away). */
+  p: number[];
+  at(home: number, away: number): number;
+  /** Implied correlation between the two sides' scores. */
+  scoreCorrelation: number;
+}
+
+function gridAt(g: ScoreGrid, home: number, away: number): number {
+  const i = Math.round(home) - g.loHome;
+  const j = Math.round(away) - g.loAway;
+  if (!Number.isInteger(home) || !Number.isInteger(away)) return 0;
+  if (i < 0 || j < 0 || i >= g.rowsHome || j >= g.colsAway) return 0;
+  return g.p[i * g.colsAway + j];
+}
+
+/** Bivariate normal density, unnormalized (the grid is normalized after). */
+function biNormalKernel(
+  dh: number,
+  da: number,
+  s: number,
+  rho: number,
+): number {
+  const r = clampNum(rho, -0.95, 0.95);
+  const z = (dh * dh - 2 * r * dh * da + da * da) / (s * s);
+  return Math.exp(-z / (2 * (1 - r * r)));
+}
+
+function clampNum(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+export interface GridInputs {
   league: League;
   /** Projected home margin. */
-  mean: number;
-  /** Margin SD, used by the non-count families. */
-  sd: number;
-  /** Projected scores, required for the count families. */
+  margin: number;
+  /** Projected combined total. */
+  total: number;
+  /** Target SD of the margin. */
+  marginSd: number;
+  /** Target SD of the total. */
+  totalSd: number;
+  /** Count sports: projected scores, used directly as Poisson means. */
   lambdaHome?: number;
   lambdaAway?: number;
 }
 
-/** The margin distribution for one game, in the right family for its sport. */
-export function marginDistribution(inputs: MarginInputs): DiscreteDist {
+/**
+ * Build the joint score grid for one game.
+ *
+ * For the count sports the two scores are independent Poissons, so the grid is
+ * their outer product — and the margin marginal is then exactly a Skellam,
+ * matching what the one-dimensional model produced.
+ *
+ * For the rest the scores are bivariate normal. The correlation isn't a free
+ * parameter: given the calibrated margin and total SDs, and taking the two
+ * sides to have equal variance,
+ *
+ *     var(margin) = 2s^2(1 - rho)      var(total) = 2s^2(1 + rho)
+ *
+ * which inverts to s^2 = (sm^2 + st^2)/4 and rho = (st^2 - sm^2)/(st^2 + sm^2).
+ * So both marginals are reproduced exactly and the implied score correlation
+ * falls out of them. It lands around 0.3 for basketball — the pace effect,
+ * where a fast game inflates both scores — and near zero for football, which
+ * is why treating those two markets as independent was a decent approximation
+ * there and a poor one in the NBA.
+ */
+export function buildScoreGrid(inputs: GridInputs): ScoreGrid {
   const cfg = DIST_CONFIG[inputs.league];
-  let dist: DiscreteDist;
-
-  if (
+  const counts =
     cfg?.margin === "skellam" &&
     inputs.lambdaHome != null &&
-    inputs.lambdaAway != null
-  ) {
-    dist = skellamDist(inputs.lambdaHome, inputs.lambdaAway);
+    inputs.lambdaAway != null;
+
+  let loHome: number;
+  let loAway: number;
+  let rowsHome: number;
+  let colsAway: number;
+  let weights: number[];
+  let family: Family;
+  let rho = 0;
+
+  if (counts) {
+    const lh = Math.max(0.05, inputs.lambdaHome!);
+    const la = Math.max(0.05, inputs.lambdaAway!);
+    loHome = 0;
+    loAway = 0;
+    rowsHome = Math.ceil(lh + 8 * Math.sqrt(lh) + 8);
+    colsAway = Math.ceil(la + 8 * Math.sqrt(la) + 8);
+    weights = new Array(rowsHome * colsAway);
+    for (let i = 0; i < rowsHome; i++) {
+      const ph = poissonPmf(lh, i);
+      for (let j = 0; j < colsAway; j++) {
+        weights[i * colsAway + j] = ph * poissonPmf(la, j);
+      }
+    }
+    family = "skellam";
   } else {
-    dist = discreteNormalDist(inputs.mean, inputs.sd, {
-      keyWeights: cfg?.keyWeights,
-    });
+    const sm = Math.max(0.5, inputs.marginSd);
+    const st = Math.max(0.5, inputs.totalSd);
+    const s = Math.sqrt((sm * sm + st * st) / 4);
+    rho = (st * st - sm * sm) / (st * st + sm * sm);
+
+    const muHome = (inputs.total + inputs.margin) / 2;
+    const muAway = (inputs.total - inputs.margin) / 2;
+    const span = Math.ceil(4.2 * s + 2);
+    loHome = Math.max(0, Math.round(muHome - span));
+    loAway = Math.max(0, Math.round(muAway - span));
+    rowsHome = Math.round(muHome + span) - loHome + 1;
+    colsAway = Math.round(muAway + span) - loAway + 1;
+
+    weights = new Array(rowsHome * colsAway);
+    for (let i = 0; i < rowsHome; i++) {
+      const dh = loHome + i - muHome;
+      for (let j = 0; j < colsAway; j++) {
+        const da = loAway + j - muAway;
+        let w = biNormalKernel(dh, da, s, rho);
+        // Football's key numbers live on the margin, so reweight there.
+        if (cfg?.keyWeights) {
+          w *= cfg.keyWeights[Math.abs(loHome + i - (loAway + j))] ?? 1;
+        }
+        weights[i * colsAway + j] = w;
+      }
+    }
+    family = cfg?.keyWeights ? "key-number" : "normal";
   }
 
-  return cfg?.tiesImpossible ? redistributeTies(dist) : dist;
+  // Ties: redistribute the diagonal to the cells one score higher for one
+  // side. That is what overtime physically does — somebody scores — so it also
+  // moves the TOTAL up by one, which is correct and which two separate
+  // distributions could never express.
+  //
+  // The split is skill-weighted but heavily shrunk toward a coin flip: a team
+  // that wins 61% of full games does NOT win 61% of overtimes, because the
+  // sample is a few minutes long and conditioned on the sides being level.
+  if (cfg?.tiesImpossible) {
+    // Regulation win share, measured before the diagonal is cleared.
+    let pHomeReg = 0;
+    let pAwayReg = 0;
+    for (let i = 0; i < rowsHome; i++) {
+      for (let j = 0; j < colsAway; j++) {
+        const diff = loHome + i - (loAway + j);
+        if (diff > 0) pHomeReg += weights[i * colsAway + j];
+        else if (diff < 0) pAwayReg += weights[i * colsAway + j];
+      }
+    }
+    const denom = pHomeReg + pAwayReg;
+    const share = denom > 0 ? pHomeReg / denom : 0.5;
+    const homeShare = clampNum(
+      0.5 + OVERTIME_SKILL_WEIGHT * (share - 0.5),
+      0.1,
+      0.9,
+    );
+    // Walk only the cells where home score == away score.
+    const firstTie = Math.max(loHome, loAway);
+    const lastTie = Math.min(loHome + rowsHome - 1, loAway + colsAway - 1);
+    for (let score = firstTie; score <= lastTie; score++) {
+      const i = score - loHome;
+      const j = score - loAway;
+      const mass = weights[i * colsAway + j];
+      if (mass <= 0) continue;
+      weights[i * colsAway + j] = 0;
+      // Split by each side's chance of winning the game outright.
+      const homeUp = i + 1 < rowsHome ? (i + 1) * colsAway + j : -1;
+      const awayUp = j + 1 < colsAway ? i * colsAway + (j + 1) : -1;
+      if (homeUp >= 0 && awayUp >= 0) {
+        weights[homeUp] += mass * homeShare;
+        weights[awayUp] += mass * (1 - homeShare);
+      } else if (homeUp >= 0) weights[homeUp] += mass;
+      else if (awayUp >= 0) weights[awayUp] += mass;
+    }
+  }
+
+  const sum = weights.reduce((a, b) => a + b, 0);
+  const p = sum > 0 ? weights.map((w) => w / sum) : weights;
+
+  const grid: ScoreGrid = {
+    family,
+    loHome,
+    loAway,
+    rowsHome,
+    colsAway,
+    p,
+    at: (h, a) => gridAt(grid, h, a),
+    scoreCorrelation: Number(rho.toFixed(4)),
+  };
+  return grid;
 }
 
-/** The combined-total distribution for one game. */
-export function totalDistribution(inputs: MarginInputs & { totalMean: number; totalSd: number }): DiscreteDist {
-  const cfg = DIST_CONFIG[inputs.league];
-  if (
-    cfg?.margin === "skellam" &&
-    inputs.lambdaHome != null &&
-    inputs.lambdaAway != null
-  ) {
-    // Derived from the same lambda pair as the margin, so the two markets are
-    // coupled rather than assumed independent.
-    return poissonSumDist(inputs.lambdaHome, inputs.lambdaAway);
+/** Collapse the grid onto the margin axis. */
+export function gridMarginDist(g: ScoreGrid): DiscreteDist {
+  const lo = g.loHome - (g.loAway + g.colsAway - 1);
+  const hi = g.loHome + g.rowsHome - 1 - g.loAway;
+  const weights = new Array(hi - lo + 1).fill(0);
+  for (let i = 0; i < g.rowsHome; i++) {
+    for (let j = 0; j < g.colsAway; j++) {
+      const m = g.loHome + i - (g.loAway + j);
+      weights[m - lo] += g.p[i * g.colsAway + j];
+    }
   }
-  return discreteNormalDist(inputs.totalMean, inputs.totalSd);
+  return makeDist(g.family, lo, weights);
+}
+
+/** Collapse the grid onto the total axis. */
+export function gridTotalDist(g: ScoreGrid): DiscreteDist {
+  const lo = g.loHome + g.loAway;
+  const hi = g.loHome + g.rowsHome - 1 + g.loAway + g.colsAway - 1;
+  const weights = new Array(hi - lo + 1).fill(0);
+  for (let i = 0; i < g.rowsHome; i++) {
+    for (let j = 0; j < g.colsAway; j++) {
+      const t = g.loHome + i + g.loAway + j;
+      weights[t - lo] += g.p[i * g.colsAway + j];
+    }
+  }
+  return makeDist(g.family === "skellam" ? "poisson" : g.family, lo, weights);
+}
+
+export interface RegionConstraints {
+  /** Home margin must be strictly inside these bounds. */
+  marginLower?: number;
+  marginUpper?: number;
+  /** Combined total must be strictly inside these bounds. */
+  totalLower?: number;
+  totalUpper?: number;
+}
+
+/**
+ * Exact probability that a game lands inside a set of constraints, with any
+ * boundary push excluded — the honest joint probability for a same-game slip.
+ *
+ * Because this walks the score grid, a margin leg and a total leg in the same
+ * game are evaluated against outcomes that can actually occur together,
+ * including the parity constraint that the independent model violated.
+ */
+export function gridRegionProbability(
+  g: ScoreGrid,
+  c: RegionConstraints,
+): number {
+  const onBoundary = (v: number, lower?: number, upper?: number) =>
+    (lower != null && Number.isFinite(lower) && v === lower) ||
+    (upper != null && Number.isFinite(upper) && v === upper);
+
+  let inside = 0;
+  let pushMass = 0;
+  for (let i = 0; i < g.rowsHome; i++) {
+    const h = g.loHome + i;
+    for (let j = 0; j < g.colsAway; j++) {
+      const prob = g.p[i * g.colsAway + j];
+      if (prob <= 0) continue;
+      const a = g.loAway + j;
+      const m = h - a;
+      const t = h + a;
+
+      if (
+        onBoundary(m, c.marginLower, c.marginUpper) ||
+        onBoundary(t, c.totalLower, c.totalUpper)
+      ) {
+        pushMass += prob;
+        continue;
+      }
+      const marginOk =
+        (c.marginLower == null || m > c.marginLower) &&
+        (c.marginUpper == null || m < c.marginUpper);
+      const totalOk =
+        (c.totalLower == null || t > c.totalLower) &&
+        (c.totalUpper == null || t < c.totalUpper);
+      if (marginOk && totalOk) inside += prob;
+    }
+  }
+
+  const p = pushMass >= 1 ? 0.5 : inside / (1 - pushMass);
+  return Math.min(0.9999, Math.max(0.0001, p));
 }
 
 /* ------------------------------------------------------------------ *

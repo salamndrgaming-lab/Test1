@@ -1,6 +1,7 @@
 import type {
   Confidence,
   Game,
+  GameWeather,
   League,
   LineMovement,
   MarketOdds,
@@ -17,13 +18,16 @@ import type {
 import { formatOdds } from "@/lib/format";
 import { RATING_PARAMS } from "@/lib/ratings";
 import {
-  intervalProbability,
+  buildScoreGrid,
+  gridMarginDist,
+  gridRegionProbability,
+  gridTotalDist,
   lineProbability,
-  marginDistribution,
   normalCdf,
-  totalDistribution,
   usesCountModel,
   type DiscreteDist,
+  type RegionConstraints,
+  type ScoreGrid,
 } from "@/lib/distributions";
 
 export { normalCdf };
@@ -34,7 +38,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "srs-v5";
+export const MODEL_VERSION = "joint-v6";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -244,6 +248,121 @@ export const BACK_TO_BACK_PENALTY: Record<League, number> = {
   NCAAF: 0,
 };
 
+/**
+ * Weather's effect on the projected total, in the sport's own units.
+ *
+ * Coarse, documented, capped assumptions — the kind of constant that should be
+ * re-fitted once CLV tracking has samples, not treated as measured truth. All
+ * of it is applied inside OUR projection and shrunk with it: the market prices
+ * weather too, just more slowly, so this is an input to our vote rather than
+ * a bonus on top.
+ *
+ * Only the mean shifts we can actually justify are applied:
+ *
+ *  - **Wind suppresses football scoring.** The passing game degrades above a
+ *    light breeze and the effect grows with speed.
+ *  - **Cold suppresses football scoring**, mildly.
+ *  - **Rain suppresses football scoring**, mildly.
+ *  - **Heat raises baseball scoring**, mildly — the ball carries further.
+ *  - **Wind in baseball is directional.** Blowing out it adds runs, blowing in
+ *    it removes them, and we have no stadium orientation, so we deliberately
+ *    apply NO mean shift and instead record it as a blind spot. Guessing the
+ *    sign would be worse than admitting we don't know it.
+ */
+export const WEATHER_MODEL = {
+  /** Wind above this is treated as calm for football. */
+  footballCalmMph: 8,
+  /** Total points removed per mph of wind above calm. */
+  footballWindPerMph: 0.15,
+  footballWindCap: 4,
+  /** Points removed per °F below freezing. */
+  footballColdPerDegree: 0.05,
+  footballColdCap: 2,
+  /** Points removed per inch of precipitation in the hour. */
+  footballRainPerInch: 8,
+  footballRainCap: 2,
+  /** Runs added per °F above 70 (and removed below). */
+  baseballTempPerDegree: 0.012,
+  baseballTempCap: 0.6,
+  /** Baseball wind above this is flagged as an unmodelled unknown. */
+  baseballWindUnknownMph: 12,
+} as const;
+
+export interface WeatherEffect {
+  /** Change to the projected total. Negative suppresses scoring. */
+  totalAdjustment: number;
+  /** Human-readable summary for the leg's stats. */
+  note: string;
+  /** Set when conditions matter but we can't sign the effect. */
+  blindSpot?: string;
+}
+
+/** Translate a forecast into a total adjustment. Returns null when it's a non-event. */
+export function weatherEffect(
+  league: League,
+  w: GameWeather | undefined,
+): WeatherEffect | null {
+  if (!w) return null;
+  const W = WEATHER_MODEL;
+  const parts: string[] = [];
+  let adjustment = 0;
+  let blindSpot: string | undefined;
+
+  if (league === "NFL") {
+    if (w.windMph > W.footballCalmMph) {
+      const wind = Math.min(
+        W.footballWindCap,
+        (w.windMph - W.footballCalmMph) * W.footballWindPerMph,
+      );
+      adjustment -= wind;
+      parts.push(`${Math.round(w.windMph)} mph wind (−${wind.toFixed(1)})`);
+    }
+    if (w.tempF != null && w.tempF < 32) {
+      const cold = Math.min(
+        W.footballColdCap,
+        (32 - w.tempF) * W.footballColdPerDegree,
+      );
+      adjustment -= cold;
+      parts.push(`${Math.round(w.tempF)}°F (−${cold.toFixed(1)})`);
+    }
+    if (w.precipInches != null && w.precipInches > 0.005) {
+      const rain = Math.min(
+        W.footballRainCap,
+        w.precipInches * W.footballRainPerInch,
+      );
+      adjustment -= rain;
+      parts.push(`precipitation (−${rain.toFixed(1)})`);
+    }
+  } else if (league === "MLB") {
+    if (w.tempF != null) {
+      const temp = clamp(
+        (w.tempF - 70) * W.baseballTempPerDegree,
+        -W.baseballTempCap,
+        W.baseballTempCap,
+      );
+      if (Math.abs(temp) > 0.05) {
+        adjustment += temp;
+        parts.push(
+          `${Math.round(w.tempF)}°F (${temp > 0 ? "+" : ""}${temp.toFixed(2)})`,
+        );
+      }
+    }
+    if (w.windMph >= W.baseballWindUnknownMph) {
+      blindSpot = `${Math.round(w.windMph)} mph wind at ${w.venue}, direction unknown — not applied`;
+      parts.push(`${Math.round(w.windMph)} mph wind (direction unknown)`);
+    }
+  } else {
+    return null;
+  }
+
+  if (parts.length === 0) return null;
+  return {
+    totalAdjustment: Number(adjustment.toFixed(2)),
+    note: parts.join(", "),
+    blindSpot,
+  };
+}
+
 export interface LeagueModel {
   /** SD of final margin, in the sport's own units. */
   marginSigma: number;
@@ -402,11 +521,20 @@ export interface GameModel {
   restEdge: number;
   restNote?: string;
 
+  /** Forecast conditions and what they did to the projected total. */
+  weather?: GameWeather;
+  weatherEffect?: WeatherEffect;
+
   // --- distributions ---
   /** Projected scores, present for the count-model sports (NHL, MLB). */
   lambdaHome?: number;
   lambdaAway?: number;
-  /** Final margin distribution, in the right family for the sport. */
+  /**
+   * The joint distribution over (home score, away score). Every market is a
+   * marginal of this one object, so they are consistent by construction.
+   */
+  grid: ScoreGrid;
+  /** Final margin distribution — a marginal of `grid`. */
   marginDist: DiscreteDist;
   /** Combined total distribution (null when no total is posted). */
   totalDist: DiscreteDist | null;
@@ -531,6 +659,7 @@ export function buildGameModel(
   rest: Record<string, TeamRest> = {},
   injuries: Record<string, TeamInjuryReport> = {},
   ratings: Record<string, TeamRating> = {},
+  weather: Record<string, GameWeather> = {},
 ): GameModel | null {
   const lm = LEAGUE_MODEL[game.league];
   if (!lm) return null;
@@ -669,6 +798,12 @@ export function buildGameModel(
     penalty === 0 ? 0 : (awayB2B ? penalty : 0) - (homeB2B ? penalty : 0);
   if (modelMargin !== null && restEdge !== 0) modelMargin += restEdge;
 
+  // --- weather ------------------------------------------------------
+  // Inside our projection and shrunk with it: the market prices weather too,
+  // just more slowly than it prices injuries.
+  const wx = weatherEffect(game.league, weather[game.id]);
+  if (wx && modelTotal !== null) modelTotal += wx.totalAdjustment;
+
   // --- what we know we don't know ----------------------------------
   // Injuries are the largest variable we don't model, and the market prices
   // them within minutes. That creates the system's worst failure mode: if a
@@ -697,6 +832,10 @@ export function buildGameModel(
     // The starter is most of a baseball line; without one we are guessing.
     infoQuality *= 0.55;
     blindSpots.push("no probable pitchers in the feed — the dominant input");
+  }
+  if (wx?.blindSpot) {
+    infoQuality *= 0.9;
+    blindSpots.push(wx.blindSpot);
   }
   if (marginBasis === "record") {
     infoQuality *= 0.8;
@@ -749,25 +888,18 @@ export function buildGameModel(
     lambdaAway = Math.max(0.1, (totalForLambda - blendedMargin) / 2);
   }
 
-  const marginDist = marginDistribution({
+  // One joint object; the margin and total distributions are its marginals.
+  const grid = buildScoreGrid({
     league: game.league,
-    mean: blendedMargin,
-    sd: sigma,
+    margin: blendedMargin,
+    total: blendedTotal ?? lm.avgTotal,
+    marginSd: sigma,
+    totalSd: totalSigma,
     lambdaHome,
     lambdaAway,
   });
-  const totalDist =
-    blendedTotal === null
-      ? null
-      : totalDistribution({
-          league: game.league,
-          mean: blendedMargin,
-          sd: sigma,
-          lambdaHome,
-          lambdaAway,
-          totalMean: blendedTotal,
-          totalSd: totalSigma,
-        });
+  const marginDist = gridMarginDist(grid);
+  const totalDist = blendedTotal === null ? null : gridTotalDist(grid);
 
   return {
     league: game.league,
@@ -790,6 +922,8 @@ export function buildGameModel(
     totalWeight,
     scoring: scoringDetail,
     movement: odds.movement,
+    weather: weather[game.id],
+    weatherEffect: wx ?? undefined,
     restEdge: Number(restEdge.toFixed(2)),
     restNote:
       homeB2B && awayB2B
@@ -803,6 +937,7 @@ export function buildGameModel(
       lambdaHome === undefined ? undefined : Number(lambdaHome.toFixed(3)),
     lambdaAway:
       lambdaAway === undefined ? undefined : Number(lambdaAway.toFixed(3)),
+    grid,
     marginDist,
     totalDist,
     infoQuality: Number(infoQuality.toFixed(3)),
@@ -1080,6 +1215,16 @@ function makeLeg(input: LegInput): SgpLeg {
       value: `${(push * 100).toFixed(1)}% (stake returned)`,
     });
   }
+  if (input.gm.weatherEffect) {
+    const wxEffect = input.gm.weatherEffect;
+    stats.push({
+      label: "Weather",
+      value:
+        wxEffect.totalAdjustment !== 0
+          ? `${wxEffect.note} → ${wxEffect.totalAdjustment > 0 ? "+" : ""}${wxEffect.totalAdjustment} to the total`
+          : wxEffect.note,
+    });
+  }
   const p = input.gm.pitchers;
   if (p?.home?.era != null || p?.away?.era != null) {
     stats.push({
@@ -1131,6 +1276,7 @@ export function legsFromGames(
   rest: Record<string, TeamRest> = {},
   injuries: Record<string, TeamInjuryReport> = {},
   ratings: Record<string, TeamRating> = {},
+  weather: Record<string, GameWeather> = {},
 ): SgpLeg[] {
   const oddsByGame = new Map(odds.map((o) => [o.gameId, o]));
   const legs: SgpLeg[] = [];
@@ -1139,7 +1285,7 @@ export function legsFromGames(
     if (g.status === "final") continue;
     const o = oddsByGame.get(g.id);
     if (!o) continue;
-    const gm = buildGameModel(g, o, scoring, rest, injuries, ratings);
+    const gm = buildGameModel(g, o, scoring, rest, injuries, ratings, weather);
     if (!gm) continue;
 
     const lm = LEAGUE_MODEL[g.league];
@@ -1228,6 +1374,9 @@ export function legsFromGames(
             lambdaHome: gm.lambdaHome,
             lambdaAway: gm.lambdaAway,
             family: gm.marginDist.family,
+            totalSigma: gm.totalSigma,
+            gridMargin: gm.blendedMargin,
+            gridTotal: gm.blendedTotal ?? lm.avgTotal,
             pushProbability: 0, // a moneyline cannot push (no sport allows ties)
           },
         }),
@@ -1312,6 +1461,9 @@ export function legsFromGames(
             lambdaHome: gm.lambdaHome,
             lambdaAway: gm.lambdaAway,
             family: gm.marginDist.family,
+            totalSigma: gm.totalSigma,
+            gridMargin: gm.blendedMargin,
+            gridTotal: gm.blendedTotal ?? lm.avgTotal,
             pushProbability: Number(pMarginPush(gm, best.threshold).toFixed(4)),
           },
         }),
@@ -1415,6 +1567,8 @@ export function legsFromGames(
             lambdaHome: modelled ? gm.lambdaHome : undefined,
             lambdaAway: modelled ? gm.lambdaAway : undefined,
             family: modelled ? gm.totalDist?.family : undefined,
+            gridMargin: modelled ? gm.blendedMargin : undefined,
+            gridTotal: modelled ? (gm.blendedTotal ?? undefined) : undefined,
             pushProbability: Number((gm.totalDist?.at(line) ?? 0).toFixed(4)),
           },
         }),
@@ -1448,37 +1602,64 @@ export function jointProbability(legs: SgpLeg[]): number {
 
   let joint = 1;
   for (const group of byGame.values()) {
-    const marginLegs = group.filter(
-      (l) => l.modelMeta?.kind === "margin" && l.modelMeta.sigma != null,
-    );
-    const otherLegs = group.filter((l) => l.modelMeta?.kind !== "margin");
+    const priced = group.filter((l) => l.modelMeta != null);
+    const unpriced = group.filter((l) => l.modelMeta == null);
 
-    if (marginLegs.length > 0) {
-      const meta = marginLegs[0].modelMeta!;
-      // Rebuild the game's own distribution so the joint probability is read
-      // off the same object that priced each leg — a normal interval would
-      // disagree with the legs for every count-model or key-number sport.
-      const dist = marginDistribution({
-        league: marginLegs[0].league,
-        mean: meta.blendedMargin ?? 0,
-        sd: meta.sigma ?? 1,
-        lambdaHome: meta.lambdaHome,
-        lambdaAway: meta.lambdaAway,
+    // Rebuild this game's joint score distribution from the metadata the legs
+    // carry, so the slip's probability is read off the same object that priced
+    // each leg individually.
+    const seed = priced.find(
+      (l) => l.modelMeta?.gridMargin != null && l.modelMeta.gridTotal != null,
+    );
+    if (seed && priced.length > 0) {
+      const m = seed.modelMeta!;
+      const grid = buildScoreGrid({
+        league: seed.league,
+        margin: m.gridMargin!,
+        total: m.gridTotal!,
+        marginSd: m.sigma ?? 1,
+        totalSd: m.totalSigma ?? (m.sigma ?? 1),
+        lambdaHome: m.lambdaHome,
+        lambdaAway: m.lambdaAway,
       });
-      // Convert every constraint into bounds on the HOME margin.
-      let lower = -Infinity;
-      let upper = Infinity;
-      for (const leg of marginLegs) {
+
+      // Collapse every leg in this game into bounds on the two axes.
+      const c: RegionConstraints = {};
+      const independent: SgpLeg[] = [];
+      for (const leg of priced) {
         const mm = leg.modelMeta!;
-        const t = mm.threshold ?? 0;
-        if (mm.side === "home") lower = Math.max(lower, t);
-        else upper = Math.min(upper, -t);
+        if (mm.kind === "margin") {
+          const t = mm.threshold ?? 0;
+          if (mm.side === "home") {
+            c.marginLower = Math.max(c.marginLower ?? -Infinity, t);
+          } else {
+            c.marginUpper = Math.min(c.marginUpper ?? Infinity, -t);
+          }
+        } else if (mm.kind === "total" && mm.totalLine != null) {
+          // Only fold in a total we actually modelled. An unmodelled total was
+          // priced AT the market on purpose; repricing it off our grid here
+          // would quietly give it an opinion the leg itself disclaims, and
+          // could make the slip's probability exceed that leg's own.
+          if (mm.totalMean == null) {
+            independent.push(leg);
+          } else if (mm.side === "under") {
+            c.totalUpper = Math.min(c.totalUpper ?? Infinity, mm.totalLine);
+          } else {
+            c.totalLower = Math.max(c.totalLower ?? -Infinity, mm.totalLine);
+          }
+        }
       }
-      joint *= intervalProbability(dist, lower, upper);
+      for (const leg of independent) joint *= leg.modelProbability;
+      // One pass over the score grid gives the exact joint probability,
+      // including the parity constraint that a margin and a total must agree
+      // on — a total of 6 with a margin of 1 cannot happen, which multiplying
+      // two separate distributions could never express.
+      joint *= gridRegionProbability(grid, c);
+    } else {
+      for (const leg of priced) joint *= leg.modelProbability;
     }
 
-    // totals are treated as independent of the margin within a game
-    for (const leg of otherLegs) joint *= leg.modelProbability;
+    for (const leg of unpriced) joint *= leg.modelProbability;
   }
 
   return joint;
@@ -1645,6 +1826,10 @@ export function buildRecommendation(
       detail: `${basisCounts.ratings ?? 0}/${legs.length} legs`,
     },
     {
+      label: "Weather-adjusted",
+      detail: `${legs.filter((l) => l.supportingStats.some((s) => s.label === "Weather")).length} legs`,
+    },
+    {
       label: "Push risk priced",
       detail: `${legs.filter((l) => (l.modelMeta?.pushProbability ?? 0) > 0.005).length} legs`,
     },
@@ -1668,6 +1853,8 @@ export function buildRecommendation(
     `Model ${MODEL_VERSION}: one projected margin and one projected total per game, from opponent-adjusted team ratings — an offense/defense pair solved from recent results so strength of schedule is divided out, with each game weighted by how recently it was played. Because the margin is net(home) − net(away) + home edge by construction, it is the same arithmetic the total uses, so the two markets can't contradict each other. Shrunk toward the de-vigged market by at most ${Math.round(MAX_MODEL_WEIGHT * 100)}% on the margin and ${Math.round(MAX_TOTAL_WEIGHT * 100)}% on the total; games with no results window fall back to unadjusted scoring rates (${Math.round(MAX_SCORING_WEIGHT * 100)}%), then a log5 record prior (${Math.round(MAX_RECORD_WEIGHT * 100)}%), then the market alone.`,
     "The book's margin is removed with Shin's method rather than by proportional normalization. Books load more margin onto longshots, so splitting it evenly overstates a longshot's fair price and understates a heavy favourite's — which would read as free edge on exactly the short moneylines a parlay is built from.",
     "Margin spread scales with the posted total rather than being a league constant: more scoring means more variance. The count-model sports get this automatically, since a Poisson difference takes its variance from the projected scores.",
+    "Each game is modelled as a joint distribution over the two final scores, and every market is a marginal of that one object. This makes a same-game slip exact rather than approximate: a margin leg and a total leg are scored against outcomes that can actually occur together, including the parity constraint the old independent model violated (a total of 6 with a margin of 1 cannot happen).",
+    "Outdoor NFL and MLB games carry a forecast adjustment to the projected total — wind, cold and rain suppress football scoring; heat raises baseball scoring. Baseball wind is deliberately NOT applied, because its effect depends on which way the stadium faces and we don't have that, so it is recorded as a known unknown instead of guessed.",
     `Each sport is priced on its own distribution${families.length ? ` (${families.join(", ")})` : ""}, not a single normal curve: hockey and baseball margins are a difference of two Poissons, football margins are reweighted toward the key numbers 3 and 7, and basketball uses a discretized normal. Every distribution is discrete, so a line that can be landed on exactly carries real push mass and the published probability is conditional on not pushing.`,
     "Injuries are detected but never quantified. We can't tell a starter from a third-stringer from this feed, so a team with players out reduces how much the model's own view counts rather than moving the projection — the model defers to the market precisely where it is least informed.",
     "Probabilities are compared against de-vigged market prices, so the book's margin is never counted as edge.",

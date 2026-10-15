@@ -7,6 +7,7 @@ import {
   fetchTeamScoring,
 } from "@/lib/providers/espn";
 import { buildAllRatings, restFromResults } from "@/lib/ratings";
+import { fetchGameWeather } from "@/lib/providers/gameweather";
 import { buildRecommendation, legsFromGames } from "@/lib/sgp";
 
 export const dynamic = "force-dynamic";
@@ -32,13 +33,15 @@ export async function GET() {
           .map((g) => g.league),
       ),
     ];
-    const [scoring, results, injuries] = active.length
+    const [scoring, results, injuries, weather] = active.length
       ? await Promise.all([
           fetchTeamScoring(active, controller.signal),
           fetchResultsWindow(active, controller.signal),
           fetchInjuries(active, controller.signal),
+          // One request covers the whole slate, and only outdoor venues.
+          fetchGameWeather(games, controller.signal),
         ])
-      : [{}, [], {}];
+      : [{}, [], {}, {}];
 
     // One results window feeds both the ratings solve and rest detection.
     const asOf = Date.now();
@@ -53,6 +56,7 @@ export async function GET() {
       rest,
       injuries,
       ratings,
+      weather,
     );
     if (legs.length === 0) {
       throw new Error(

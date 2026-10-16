@@ -139,15 +139,20 @@ export interface LineMovement {
 }
 
 /**
- * How recently a team played. A second game on consecutive nights is a
- * measurable disadvantage in basketball and hockey.
+ * A team's recent schedule load. Congestion isn't binary: three games in four
+ * nights is a worse spot than a single back-to-back, and a team that has just
+ * flown across the country on one day's rest is different again.
  */
-export interface TeamRest {
+export interface TeamSchedule {
   teamId: string;
   /** 1 = played last night (a back-to-back). Infinity = no recent game seen. */
   daysSinceLastGame: number;
-  /** Games played in the window we looked at. */
-  gamesInWindow: number;
+  gamesInLast4Days: number;
+  gamesInLast6Days: number;
+  /** Abbreviation of the host of their last game — the travel origin. */
+  lastVenueAbbr?: string;
+  /** How many of their most recent games in a row were away. */
+  consecutiveRoadGames: number;
 }
 
 /**
@@ -190,6 +195,9 @@ export interface CompletedGame {
   date: string;
   homeId: string;
   awayId: string;
+  /** Abbreviations, so the venue can be looked up for travel distance. */
+  homeAbbr?: string;
+  awayAbbr?: string;
   homeScore: number;
   awayScore: number;
 }

@@ -6,7 +6,7 @@ import {
   fetchResultsWindow,
   fetchTeamScoring,
 } from "@/lib/providers/espn";
-import { buildAllRatings, restFromResults } from "@/lib/ratings";
+import { buildAllRatings, scheduleFromResults } from "@/lib/ratings";
 import { fetchGameWeather } from "@/lib/providers/gameweather";
 import { buildRecommendation, legsFromGames } from "@/lib/sgp";
 
@@ -43,17 +43,17 @@ export async function GET() {
         ])
       : [{}, [], {}, {}];
 
-    // One results window feeds both the ratings solve and rest detection.
+    // One results window feeds both the ratings solve and the schedule model.
     const asOf = Date.now();
     const { ratings } = buildAllRatings(results, asOf);
-    const rest = restFromResults(results, asOf);
+    const schedule = scheduleFromResults(results, asOf);
 
     const legs = legsFromGames(
       games,
       odds,
       gameLinks,
       scoring,
-      rest,
+      schedule,
       injuries,
       ratings,
       weather,

@@ -8,7 +8,7 @@ import type {
   ProbablePitcher,
   TeamInjuryReport,
   TeamRating,
-  TeamRest,
+  TeamSchedule,
   TeamScoring,
   SgpConfidenceFactor,
   SgpLeg,
@@ -17,6 +17,12 @@ import type {
 } from "@/types";
 import { formatOdds } from "@/lib/format";
 import { RATING_PARAMS } from "@/lib/ratings";
+import {
+  distanceKm,
+  parkFactor,
+  teamCity,
+  timeZonesCrossed,
+} from "@/lib/venues";
 import {
   buildScoreGrid,
   gridMarginDist,
@@ -38,7 +44,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "joint-v6";
+export const MODEL_VERSION = "sched-v7";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -247,6 +253,121 @@ export const BACK_TO_BACK_PENALTY: Record<League, number> = {
   NFL: 0,
   NCAAF: 0,
 };
+
+/**
+ * The rest of the schedule model, as multiples of the league's back-to-back
+ * penalty — so a league where fatigue doesn't apply (football, which plays
+ * weekly) gets zero for all of it automatically.
+ *
+ * Congestion is not binary. Three games in four nights is a worse spot than a
+ * single back-to-back, and a long road trip or a cross-country flight is a
+ * different cost again. Coarse, documented, capped assumptions.
+ */
+export const SCHEDULE_MODEL = {
+  /** Extra penalty for a third game in four nights. */
+  threeInFour: 0.45,
+  /** Extra penalty for a fourth game in six nights. */
+  fourInSix: 0.3,
+  /** Bonus for arriving on three or more days of rest. */
+  wellRested: 0.3,
+  /** Penalty per 1000 km travelled since the last game. */
+  travelPer1000Km: 0.25,
+  /** Extra penalty per time zone crossed. */
+  perTimeZone: 0.2,
+  /** Penalty once a road trip reaches its fourth straight game. */
+  longRoadTrip: 0.35,
+  /** Hard cap on the whole asymmetry, in margin units. */
+  capMultiple: 2.2,
+} as const;
+
+export interface ScheduleRead {
+  /** Margin units favouring the home team. Negative favours the away team. */
+  edge: number;
+  /** What drove it, for display. Empty when nothing applied. */
+  notes: string[];
+}
+
+/**
+ * How much the schedule favours one side.
+ *
+ * Only the ASYMMETRY matters: both teams tired cancels out. Everything is
+ * expressed as a fatigue cost per side and then subtracted, so the sign
+ * convention can't drift.
+ */
+export function scheduleEdge(
+  game: Game,
+  schedule: Record<string, TeamSchedule>,
+): ScheduleRead {
+  const unit = BACK_TO_BACK_PENALTY[game.league] ?? 0;
+  if (unit === 0) return { edge: 0, notes: [] };
+
+  const S = SCHEDULE_MODEL;
+  const notes: string[] = [];
+  const venue = teamCity(game.league, game.home.abbreviation);
+
+  const costFor = (
+    team: Game["home"],
+    label: string,
+    isHomeTeam: boolean,
+  ): number => {
+    const s = schedule[`${game.league}:${team.id}`];
+    if (!s) return 0;
+    let cost = 0;
+
+    if (s.daysSinceLastGame === 1) {
+      cost += unit;
+      notes.push(`${label} on a back-to-back`);
+    } else if (s.daysSinceLastGame >= 3) {
+      cost -= unit * S.wellRested;
+      notes.push(`${label} on ${s.daysSinceLastGame} days' rest`);
+    }
+
+    if (s.gamesInLast4Days >= 3) {
+      cost += unit * S.threeInFour;
+      notes.push(`${label} 3-in-4`);
+    }
+    if (s.gamesInLast6Days >= 4) {
+      cost += unit * S.fourInSix;
+      notes.push(`${label} 4-in-6`);
+    }
+
+    // Travel only burdens the visiting side: the home team slept at home.
+    if (!isHomeTeam && venue && s.lastVenueAbbr) {
+      const origin = teamCity(game.league, s.lastVenueAbbr);
+      if (origin) {
+        const km = distanceKm(origin, venue);
+        if (km > 500) {
+          cost += unit * S.travelPer1000Km * (km / 1000);
+          const tz = timeZonesCrossed(origin, venue);
+          if (tz > 0) cost += unit * S.perTimeZone * tz;
+          notes.push(
+            `${label} travelled ${Math.round(km)} km${tz > 0 ? `, ${tz} time zone${tz === 1 ? "" : "s"}` : ""}`,
+          );
+        }
+      }
+    }
+
+    // A long road trip is a burden in its own right and doesn't depend on
+    // knowing where they flew from. Only charged to the visiting side: a team
+    // whose last five games were away but who is now at home is coming home,
+    // which is relief rather than cost.
+    if (!isHomeTeam && s.consecutiveRoadGames >= 4) {
+      cost += unit * S.longRoadTrip;
+      notes.push(`${label} ${s.consecutiveRoadGames} straight on the road`);
+    }
+
+    return cost;
+  };
+
+  const homeCost = costFor(game.home, game.home.abbreviation, true);
+  const awayCost = costFor(game.away, game.away.abbreviation, false);
+  const cap = unit * S.capMultiple;
+
+  return {
+    edge: Number(clamp(awayCost - homeCost, -cap, cap).toFixed(2)),
+    notes,
+  };
+}
 
 /**
  * Weather's effect on the projected total, in the sport's own units.
@@ -524,6 +645,8 @@ export interface GameModel {
   /** Forecast conditions and what they did to the projected total. */
   weather?: GameWeather;
   weatherEffect?: WeatherEffect;
+  /** Venue run-scoring multiplier applied to our projected total (1 = none). */
+  parkFactor: number;
 
   // --- distributions ---
   /** Projected scores, present for the count-model sports (NHL, MLB). */
@@ -656,7 +779,7 @@ export function buildGameModel(
   game: Game,
   odds: MarketOdds,
   scoring: Record<string, TeamScoring> = {},
-  rest: Record<string, TeamRest> = {},
+  schedule: Record<string, TeamSchedule> = {},
   injuries: Record<string, TeamInjuryReport> = {},
   ratings: Record<string, TeamRating> = {},
   weather: Record<string, GameWeather> = {},
@@ -784,19 +907,20 @@ export function buildGameModel(
     maxWeight = MAX_RECORD_WEIGHT;
   }
 
-  // --- rest / back-to-backs ----------------------------------------
+  // --- schedule and travel ------------------------------------------
   // Applied inside OUR projection, not on top of the blend: the market knows
   // the schedule too, so this is an input to our vote, not a bonus edge.
-  const penalty = BACK_TO_BACK_PENALTY[game.league] ?? 0;
-  const homeRest = rest[`${game.league}:${game.home.id}`];
-  const awayRest = rest[`${game.league}:${game.away.id}`];
-  const isB2B = (r?: TeamRest) => r != null && r.daysSinceLastGame === 1;
-  const homeB2B = isB2B(homeRest);
-  const awayB2B = isB2B(awayRest);
-  // Only the ASYMMETRY matters — both teams tired cancels out.
-  const restEdge =
-    penalty === 0 ? 0 : (awayB2B ? penalty : 0) - (homeB2B ? penalty : 0);
+  const sched = scheduleEdge(game, schedule);
+  const restEdge = sched.edge;
   if (modelMargin !== null && restEdge !== 0) modelMargin += restEdge;
+
+  // --- park factor ---------------------------------------------------
+  // Our scoring inputs are season aggregates across every park a team
+  // visited, so our projected total is park-NEUTRAL while the posted total is
+  // park-specific. Correcting that isn't an edge claim, it makes the two
+  // numbers comparable before we compare them.
+  const park = parkFactor(game.league, game.home.abbreviation);
+  if (modelTotal !== null && park !== 1) modelTotal *= park;
 
   // --- weather ------------------------------------------------------
   // Inside our projection and shrunk with it: the market prices weather too,
@@ -924,15 +1048,9 @@ export function buildGameModel(
     movement: odds.movement,
     weather: weather[game.id],
     weatherEffect: wx ?? undefined,
+    parkFactor: park,
     restEdge: Number(restEdge.toFixed(2)),
-    restNote:
-      homeB2B && awayB2B
-        ? "both teams on a back-to-back"
-        : homeB2B
-          ? `${game.home.abbreviation} on a back-to-back`
-          : awayB2B
-            ? `${game.away.abbreviation} on a back-to-back`
-            : undefined,
+    restNote: sched.notes.length > 0 ? sched.notes.join(" · ") : undefined,
     lambdaHome:
       lambdaHome === undefined ? undefined : Number(lambdaHome.toFixed(3)),
     lambdaAway:
@@ -1215,6 +1333,13 @@ function makeLeg(input: LegInput): SgpLeg {
       value: `${(push * 100).toFixed(1)}% (stake returned)`,
     });
   }
+  if (input.gm.parkFactor !== 1) {
+    const pf = input.gm.parkFactor;
+    stats.push({
+      label: "Park",
+      value: `${input.game.home.abbreviation} ${pf.toFixed(2)}× runs (${pf > 1 ? "+" : ""}${((pf - 1) * 100).toFixed(0)}%)`,
+    });
+  }
   if (input.gm.weatherEffect) {
     const wxEffect = input.gm.weatherEffect;
     stats.push({
@@ -1273,7 +1398,7 @@ export function legsFromGames(
   odds: MarketOdds[],
   gameLinks: Record<string, string> = {},
   scoring: Record<string, TeamScoring> = {},
-  rest: Record<string, TeamRest> = {},
+  schedule: Record<string, TeamSchedule> = {},
   injuries: Record<string, TeamInjuryReport> = {},
   ratings: Record<string, TeamRating> = {},
   weather: Record<string, GameWeather> = {},
@@ -1285,7 +1410,7 @@ export function legsFromGames(
     if (g.status === "final") continue;
     const o = oddsByGame.get(g.id);
     if (!o) continue;
-    const gm = buildGameModel(g, o, scoring, rest, injuries, ratings, weather);
+    const gm = buildGameModel(g, o, scoring, schedule, injuries, ratings, weather);
     if (!gm) continue;
 
     const lm = LEAGUE_MODEL[g.league];
@@ -1854,6 +1979,8 @@ export function buildRecommendation(
     "The book's margin is removed with Shin's method rather than by proportional normalization. Books load more margin onto longshots, so splitting it evenly overstates a longshot's fair price and understates a heavy favourite's — which would read as free edge on exactly the short moneylines a parlay is built from.",
     "Margin spread scales with the posted total rather than being a league constant: more scoring means more variance. The count-model sports get this automatically, since a Poisson difference takes its variance from the projected scores.",
     "Each game is modelled as a joint distribution over the two final scores, and every market is a marginal of that one object. This makes a same-game slip exact rather than approximate: a margin leg and a total leg are scored against outcomes that can actually occur together, including the parity constraint the old independent model violated (a total of 6 with a margin of 1 cannot happen).",
+    "Baseball totals carry a park factor, because our scoring inputs are season aggregates across every park a team visited while the posted total is park-specific — Coors and Petco differ by nearly 20% in run environment, and without this our projection was systematically low in one and high in the other.",
+    "The schedule model goes beyond back-to-backs: days of rest, three games in four nights, four in six, flight distance and time zones crossed since the last game, and long road trips. Only the asymmetry between the two sides counts, and the whole adjustment is capped.",
     "Outdoor NFL and MLB games carry a forecast adjustment to the projected total — wind, cold and rain suppress football scoring; heat raises baseball scoring. Baseball wind is deliberately NOT applied, because its effect depends on which way the stadium faces and we don't have that, so it is recorded as a known unknown instead of guessed.",
     `Each sport is priced on its own distribution${families.length ? ` (${families.join(", ")})` : ""}, not a single normal curve: hockey and baseball margins are a difference of two Poissons, football margins are reweighted toward the key numbers 3 and 7, and basketball uses a discretized normal. Every distribution is discrete, so a line that can be landed on exactly carries real push mass and the published probability is conditional on not pushing.`,
     "Injuries are detected but never quantified. We can't tell a starter from a third-stringer from this feed, so a team with players out reduces how much the model's own view counts rather than moving the projection — the model defers to the market precisely where it is least informed.",

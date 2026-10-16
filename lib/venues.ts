@@ -121,3 +121,118 @@ export function outdoorVenue(league: League, homeAbbr: string): Venue | null {
   if (!v) return null;
   return v.roof === "open" ? v : null;
 }
+
+/* ------------------------------------------------------------------ *
+ * Where each team plays — for travel distance and time zones
+ * ------------------------------------------------------------------ *
+ * City-centre coordinates are plenty here: the output is a flight distance in
+ * the hundreds or thousands of kilometres, so being a few kilometres off the
+ * arena is irrelevant. Keyed on ESPN's team abbreviations.
+ */
+
+export interface TeamCity {
+  lat: number;
+  lon: number;
+}
+
+const NBA_CITIES: Record<string, TeamCity> = {
+  ATL: { lat: 33.76, lon: -84.39 }, BOS: { lat: 42.36, lon: -71.06 },
+  BKN: { lat: 40.68, lon: -73.97 }, CHA: { lat: 35.23, lon: -80.84 },
+  CHI: { lat: 41.88, lon: -87.63 }, CLE: { lat: 41.50, lon: -81.69 },
+  DAL: { lat: 32.78, lon: -96.80 }, DEN: { lat: 39.74, lon: -104.98 },
+  DET: { lat: 42.33, lon: -83.05 }, GS: { lat: 37.77, lon: -122.42 },
+  HOU: { lat: 29.76, lon: -95.37 }, IND: { lat: 39.77, lon: -86.16 },
+  LAC: { lat: 34.05, lon: -118.24 }, LAL: { lat: 34.05, lon: -118.24 },
+  MEM: { lat: 35.15, lon: -90.05 }, MIA: { lat: 25.76, lon: -80.19 },
+  MIL: { lat: 43.04, lon: -87.91 }, MIN: { lat: 44.98, lon: -93.27 },
+  NO: { lat: 29.95, lon: -90.07 }, NY: { lat: 40.75, lon: -73.99 },
+  OKC: { lat: 35.47, lon: -97.52 }, ORL: { lat: 28.54, lon: -81.38 },
+  PHI: { lat: 39.95, lon: -75.17 }, PHX: { lat: 33.45, lon: -112.07 },
+  POR: { lat: 45.52, lon: -122.68 }, SAC: { lat: 38.58, lon: -121.49 },
+  SA: { lat: 29.42, lon: -98.49 }, TOR: { lat: 43.65, lon: -79.38 },
+  UTAH: { lat: 40.76, lon: -111.89 }, WSH: { lat: 38.90, lon: -77.04 },
+};
+
+const NHL_CITIES: Record<string, TeamCity> = {
+  ANA: { lat: 33.83, lon: -117.91 }, BOS: { lat: 42.36, lon: -71.06 },
+  BUF: { lat: 42.89, lon: -78.88 }, CGY: { lat: 51.05, lon: -114.07 },
+  CAR: { lat: 35.78, lon: -78.64 }, CHI: { lat: 41.88, lon: -87.63 },
+  COL: { lat: 39.74, lon: -104.98 }, CBJ: { lat: 39.96, lon: -83.00 },
+  DAL: { lat: 32.78, lon: -96.80 }, DET: { lat: 42.33, lon: -83.05 },
+  EDM: { lat: 53.55, lon: -113.49 }, FLA: { lat: 26.13, lon: -80.33 },
+  LA: { lat: 34.05, lon: -118.24 }, MIN: { lat: 44.98, lon: -93.27 },
+  MTL: { lat: 45.50, lon: -73.57 }, NSH: { lat: 36.16, lon: -86.78 },
+  NJ: { lat: 40.74, lon: -74.17 }, NYI: { lat: 40.72, lon: -73.59 },
+  NYR: { lat: 40.75, lon: -73.99 }, OTT: { lat: 45.42, lon: -75.70 },
+  PHI: { lat: 39.95, lon: -75.17 }, PIT: { lat: 40.44, lon: -79.996 },
+  SJ: { lat: 37.33, lon: -121.89 }, SEA: { lat: 47.61, lon: -122.33 },
+  STL: { lat: 38.63, lon: -90.20 }, TB: { lat: 27.95, lon: -82.46 },
+  TOR: { lat: 43.65, lon: -79.38 }, UTAH: { lat: 40.76, lon: -111.89 },
+  VAN: { lat: 49.28, lon: -123.12 }, VGK: { lat: 36.17, lon: -115.14 },
+  WSH: { lat: 38.90, lon: -77.04 }, WPG: { lat: 49.90, lon: -97.14 },
+};
+
+/** NFL and MLB reuse the stadium table, which is already coordinates. */
+const fromVenues = (vs: Venue[]): Record<string, TeamCity> =>
+  Object.fromEntries(vs.map((v) => [v.team, { lat: v.lat, lon: v.lon }]));
+
+const CITIES: Partial<Record<League, Record<string, TeamCity>>> = {
+  NBA: NBA_CITIES,
+  NHL: NHL_CITIES,
+  NFL: fromVenues(NFL_VENUES),
+  MLB: fromVenues(MLB_VENUES),
+};
+
+/** Where a team plays its home games. Null for leagues we don't map (NCAA). */
+export function teamCity(league: League, abbr: string): TeamCity | null {
+  return CITIES[league]?.[abbr] ?? null;
+}
+
+/** Great-circle distance in kilometres. */
+export function distanceKm(a: TeamCity, b: TeamCity): number {
+  const R = 6371;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** Time zones crossed, approximated from longitude (15 degrees per hour). */
+export function timeZonesCrossed(a: TeamCity, b: TeamCity): number {
+  return Math.abs(Math.round((b.lon - a.lon) / 15));
+}
+
+/* ------------------------------------------------------------------ *
+ * Park factors
+ * ------------------------------------------------------------------ *
+ * Our scoring inputs are season aggregates across every park a team visited,
+ * so our projected total is park-NEUTRAL while the market's posted total is
+ * park-specific. That is a systematic bias in our own input — too low at
+ * Coors, too high at Petco — and correcting it is not an edge claim, it is
+ * making the two numbers comparable before we compare them.
+ *
+ * Multipliers on expected runs. Approximate, league-average-centred, and
+ * exactly the kind of constant to re-fit once CLV tracking has samples. Only
+ * baseball gets these: park geometry has no basketball or hockey equivalent,
+ * and football's venue effect is weather, which is modelled directly.
+ */
+export const MLB_PARK_FACTOR: Record<string, number> = {
+  COL: 1.13, BOS: 1.06, CIN: 1.06, KC: 1.03, PHI: 1.03, TEX: 1.03,
+  CHC: 1.02, ARI: 1.02, BAL: 1.02, ATL: 1.01, HOU: 1.01, LAA: 1.01,
+  TOR: 1.01, MIN: 1.0, WSH: 1.0, NYY: 1.0, OAK: 1.0,
+  PIT: 0.99, CHW: 0.99, STL: 0.98, LAD: 0.98, MIL: 0.98,
+  NYM: 0.97, TB: 0.97, CLE: 0.97, SD: 0.96, DET: 0.96,
+  SF: 0.95, SEA: 0.95, MIA: 0.94,
+};
+
+/**
+ * Multiplier to apply to OUR projected total for the venue. 1 means no
+ * adjustment, which is also what an unmapped team gets.
+ */
+export function parkFactor(league: League, homeAbbr: string): number {
+  if (league !== "MLB") return 1;
+  return MLB_PARK_FACTOR[homeAbbr] ?? 1;
+}

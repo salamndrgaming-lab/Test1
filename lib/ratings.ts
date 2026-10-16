@@ -1,4 +1,4 @@
-import type { CompletedGame, League, TeamRating } from "@/types";
+import type { CompletedGame, League, TeamRating, TeamSchedule } from "@/types";
 
 /**
  * Opponent-adjusted team ratings.
@@ -282,34 +282,65 @@ export function buildAllRatings(
 }
 
 /**
- * Rest and back-to-backs, derived from the same results window.
+ * Schedule load, derived from the same results window.
  *
- * Previously this came from its own pair of requests. Folding it into the
- * ratings window means one source of truth and fewer calls.
+ * A plain back-to-back flag was leaving most of the signal on the table.
+ * Congestion is not binary: three games in four nights is a worse spot than a
+ * single back-to-back, and a team that has just crossed the country on one
+ * day's rest is in a different situation again. All of it comes out of the
+ * results window we already fetch for the ratings — no extra requests.
  */
-export function restFromResults(
+export function scheduleFromResults(
   games: CompletedGame[],
   asOf: number,
-): Record<string, { teamId: string; daysSinceLastGame: number; gamesInWindow: number }> {
-  const out: Record<
+): Record<string, TeamSchedule> {
+  const DAY = 86_400_000;
+  // Collect each team's recent games, newest first.
+  const byTeam = new Map<
     string,
-    { teamId: string; daysSinceLastGame: number; gamesInWindow: number }
-  > = {};
+    { daysAgo: number; venueAbbr?: string; wasHome: boolean }[]
+  >();
+
   for (const g of games) {
-    const ageDays = (asOf - +new Date(g.date)) / 86_400_000;
+    const ageDays = (asOf - +new Date(g.date)) / DAY;
     if (!Number.isFinite(ageDays) || ageDays < 0) continue;
     // Calendar days back, so a game late last night reads as 1, not 0.
     const daysAgo = Math.max(1, Math.ceil(ageDays));
     for (const teamId of [g.homeId, g.awayId]) {
       if (!teamId) continue;
       const key = `${g.league}:${teamId}`;
-      const prev = out[key];
-      out[key] = {
-        teamId,
-        daysSinceLastGame: Math.min(prev?.daysSinceLastGame ?? Infinity, daysAgo),
-        gamesInWindow: (prev?.gamesInWindow ?? 0) + (daysAgo <= 3 ? 1 : 0),
-      };
+      const list = byTeam.get(key) ?? [];
+      list.push({
+        daysAgo,
+        // Where that game was played, i.e. the host of it.
+        venueAbbr: g.homeAbbr,
+        wasHome: teamId === g.homeId,
+      });
+      byTeam.set(key, list);
     }
+  }
+
+  const out: Record<string, TeamSchedule> = {};
+  for (const [key, list] of byTeam) {
+    list.sort((a, b) => a.daysAgo - b.daysAgo);
+    const teamId = key.split(":")[1];
+    const recent = list[0];
+
+    // How many consecutive most-recent games were on the road.
+    let roadStreak = 0;
+    for (const g of list) {
+      if (g.wasHome) break;
+      roadStreak++;
+    }
+
+    out[key] = {
+      teamId,
+      daysSinceLastGame: recent?.daysAgo ?? Infinity,
+      gamesInLast4Days: list.filter((g) => g.daysAgo <= 4).length,
+      gamesInLast6Days: list.filter((g) => g.daysAgo <= 6).length,
+      lastVenueAbbr: recent?.venueAbbr,
+      consecutiveRoadGames: roadStreak,
+    };
   }
   return out;
 }

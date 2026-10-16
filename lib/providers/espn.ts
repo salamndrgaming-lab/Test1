@@ -575,6 +575,8 @@ export function parseCompletedGames(
         date: ev.date,
         homeId,
         awayId,
+        homeAbbr: home?.team?.abbreviation,
+        awayAbbr: away?.team?.abbreviation,
         homeScore,
         awayScore,
       });

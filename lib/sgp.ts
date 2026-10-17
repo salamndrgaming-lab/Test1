@@ -44,7 +44,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "sched-v7";
+export const MODEL_VERSION = "sched-v7.1";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -279,6 +279,119 @@ export const SCHEDULE_MODEL = {
   /** Hard cap on the whole asymmetry, in margin units. */
   capMultiple: 2.2,
 } as const;
+
+/**
+ * Smallest share of a league's average per-side score that a team can
+ * plausibly be projected for. No MLB team is projected under about a run, and
+ * no NHL team under about a goal, however lopsided the matchup.
+ */
+export const MIN_SIDE_SCORE_SHARE = 0.25;
+
+/**
+ * How far the spread-implied and moneyline-implied win probabilities may
+ * differ before we stop believing the spread. Two correctly-parsed market
+ * signals agree within a few points; a gap this wide is far more likely to be
+ * a parsing fault than a real market inconsistency.
+ */
+export const MAX_SIGNAL_DISAGREEMENT = 0.1;
+
+/**
+ * Above this probability a leg is not shown as a pick.
+ *
+ * Three reasons, all of them about the number being unusable rather than
+ * merely large. The distribution's far tail is the part we can least validate
+ * — it is set by an assumed shape, not by anything measured. The published
+ * probability is clamped at 0.999, so a saturated leg reports a ceiling
+ * rather than an estimate, and the expected-value and Kelly figures computed
+ * from it are meaningless. And a market that agrees it is near-certain prices
+ * it accordingly, so there was never anything to win there.
+ *
+ * A -45 college football favourite really does win about 99% of the time.
+ * That is a fact about the game, not a betting opinion, and the slip is for
+ * betting opinions.
+ */
+export const SATURATION_CEILING = 0.97;
+
+/**
+ * Projected scores for the count sports, derived from a projected total and
+ * margin.
+ *
+ * The naive `(total ± margin)/2` is unconstrained: a large margin against a
+ * normal total drives one side's projection toward zero, and a baseball team
+ * projected for 0.185 runs produces a near-certainty that is an artifact of
+ * the arithmetic rather than a view about the game. Worse, flooring the lambda
+ * on its own silently breaks the identity `lambdaHome - lambdaAway = margin`
+ * that the rest of the model relies on.
+ *
+ * So the MARGIN is what gets constrained, not the lambda. Both sides stay
+ * above a plausible floor and the identity holds exactly.
+ */
+export function deriveLambdas(
+  league: League,
+  total: number,
+  margin: number,
+): { lambdaHome: number; lambdaAway: number; margin: number; clamped: boolean } {
+  const lm = LEAGUE_MODEL[league];
+  const safeTotal = Math.max(0.5, total);
+  const floor = Math.max(
+    0.1,
+    (lm ? lm.avgTotal / 2 : safeTotal / 2) * MIN_SIDE_SCORE_SHARE,
+  );
+  // Keeping both sides above the floor caps how large the margin can be.
+  const maxMargin = Math.max(0, safeTotal - 2 * floor);
+  const constrained = clamp(margin, -maxMargin, maxMargin);
+
+  return {
+    lambdaHome: Number(((safeTotal + constrained) / 2).toFixed(3)),
+    lambdaAway: Number(((safeTotal - constrained) / 2).toFixed(3)),
+    margin: Number(constrained.toFixed(3)),
+    clamped: Math.abs(constrained - margin) > 1e-6,
+  };
+}
+
+/**
+ * Invert a win probability into a projected margin, for the count sports.
+ *
+ * The normal quantile is the right inverse for a normal margin, but hockey and
+ * baseball are priced on a Poisson difference, and the two don't round-trip:
+ * inverting a -200 baseball moneyline through a normal and then pricing it
+ * with a Skellam came back 6.4 points too high, a systematic bias on every
+ * favourite. So invert the distribution we actually price with, numerically.
+ *
+ * Bisection on a monotone function — more scoring margin always means a higher
+ * win probability — so it converges in a fixed number of cheap steps.
+ */
+export function marginFromWinProb(
+  league: League,
+  total: number,
+  pHome: number,
+): number {
+  const target = clamp(pHome, 0.005, 0.995);
+  const safeTotal = Math.max(0.5, total);
+  const probAt = (margin: number) => {
+    const d = deriveLambdas(league, safeTotal, margin);
+    return gridMarginDist(
+      buildScoreGrid({
+        league,
+        margin: d.margin,
+        total: safeTotal,
+        marginSd: LEAGUE_MODEL[league]?.marginSigma ?? 1,
+        totalSd: LEAGUE_MODEL[league]?.totalSigma ?? 1,
+        lambdaHome: d.lambdaHome,
+        lambdaAway: d.lambdaAway,
+      }),
+    ).above(0);
+  };
+
+  let lo = -safeTotal;
+  let hi = safeTotal;
+  for (let i = 0; i < 24; i++) {
+    const mid = (lo + hi) / 2;
+    if (probAt(mid) < target) lo = mid;
+    else hi = mid;
+  }
+  return Number(((lo + hi) / 2).toFixed(3));
+}
 
 export interface ScheduleRead {
   /** Margin units favouring the home team. Negative favours the away team. */
@@ -605,6 +718,8 @@ export interface GameModel {
   modelMargin: number | null;
   /** Final blended projection used for all legs in this game. */
   blendedMargin: number;
+  /** True when the projection had to be pulled back to a possible value. */
+  marginClamped: boolean;
   /** Weight given to our model (0..MAX_MODEL_WEIGHT). */
   modelWeight: number;
   /** Which inputs produced modelMargin, best first. */
@@ -615,6 +730,10 @@ export interface GameModel {
   vig: number;
   /** Shin's estimated share of informed money behind that margin. */
   shinZ: number;
+  /** Spread-implied minus moneyline-implied margin (null without both). */
+  marginDisagreement: number | null;
+  /** True when the spread was rejected in favour of the moneyline. */
+  spreadDistrusted: boolean;
   /** Games played by the less-established team (drives shrinkage). */
   sampleGames: number;
 
@@ -811,10 +930,70 @@ export function buildGameModel(
 
   // The posted spread IS the market's projected margin — prefer it when
   // present; otherwise invert the de-vigged moneyline through the margin model.
+  /*
+   * A posted spread is only the market's projected margin in the sports that
+   * post a TRUE point spread. The hockey puck line and the baseball run line
+   * are fixed at ±1.5 and priced through their odds instead, so reading one as
+   * a projected margin claimed every hockey game would be decided by 1.5
+   * goals — which priced a pick'em NHL game at 74% for the home side against
+   * a 50% market, on every game.
+   *
+   * STANDARD_SPREAD_LEAGUES already encoded this distinction for pricing the
+   * spread leg; it belongs here too.
+   */
+  const hasTrueSpread =
+    odds.spread != null &&
+    Number.isFinite(odds.spread) &&
+    STANDARD_SPREAD_LEAGUES.has(game.league);
+  const spreadMargin = hasTrueSpread
+    ? -(odds.spread as number) // stored as the HOME spread (negative = home favoured)
+    : null;
+  // The moneyline is a second, independent read on the same quantity. For the
+  // count sports it must be inverted through the distribution we actually
+  // price with, not through a normal — see marginFromWinProb.
+  const marketTotalForInversion =
+    odds.total != null && Number.isFinite(odds.total) ? odds.total : lm.avgTotal;
+  const moneylineMargin = usesCountModel(game.league)
+    ? marginFromWinProb(game.league, marketTotalForInversion, marketHomeWinProb)
+    : sigma * normalQuantile(clamp(marketHomeWinProb, 0.01, 0.99));
+
+  /*
+   * Cross-check the two market signals.
+   *
+   * The model used to take the spread as gospel for the margin and use the
+   * moneyline only as a de-vig benchmark — so when the two disagreed, nothing
+   * noticed. That matters because the home spread's SIGN is derived from
+   * matching a team abbreviation inside a free-text "details" string, and when
+   * that match fails we fall back to ESPN's raw `spread` field, which is the
+   * FAVOURITE's spread rather than the home team's. On an away favourite that
+   * flips the sign, turning a 6.5-point home underdog into a 6.5-point home
+   * favourite — a 43pp swing in our win probability with no complaint.
+   *
+   * A moneyline pair cannot be misread that way: whichever price is shorter
+   * is the favourite, with no name matching involved. So when the two
+   * disagree materially we trust the moneyline and say so.
+   */
+  const mlIsInformative =
+    odds.homeMoneyline != null &&
+    odds.awayMoneyline != null &&
+    marketHomeWinProb > 0.03 &&
+    marketHomeWinProb < 0.97;
+
+  let marginDisagreement: number | null = null;
+  let spreadDistrusted = false;
+  if (spreadMargin != null && mlIsInformative) {
+    marginDisagreement = spreadMargin - moneylineMargin;
+    // Compared in PROBABILITY space, not margin space. The same three-point
+    // discrepancy is noise in college football and a 36pp swing in baseball,
+    // so a tolerance in margin units is the wrong instrument — what we care
+    // about is how far the two signals disagree about who wins.
+    const pFromSpread = normalCdf(spreadMargin / sigma);
+    spreadDistrusted =
+      Math.abs(pFromSpread - marketHomeWinProb) > MAX_SIGNAL_DISAGREEMENT;
+  }
+
   const marketMargin =
-    odds.spread != null && Number.isFinite(odds.spread)
-      ? -odds.spread // stored as the HOME spread (negative = home favoured)
-      : sigma * normalQuantile(clamp(marketHomeWinProb, 0.01, 0.99));
+    spreadMargin == null || spreadDistrusted ? moneylineMargin : spreadMargin;
 
   // --- our view ----------------------------------------------------
   const homeRec = parseRecord(game.home.record);
@@ -957,6 +1136,12 @@ export function buildGameModel(
     infoQuality *= 0.55;
     blindSpots.push("no probable pitchers in the feed — the dominant input");
   }
+  if (spreadDistrusted) {
+    blindSpots.push(
+      `posted spread implies a ${spreadMargin?.toFixed(1)} margin (${(normalCdf((spreadMargin ?? 0) / sigma) * 100).toFixed(0)}% to win) but the moneyline implies ${moneylineMargin.toFixed(1)} (${(marketHomeWinProb * 100).toFixed(0)}%) — using the moneyline`,
+    );
+    infoQuality *= 0.75;
+  }
   if (wx?.blindSpot) {
     infoQuality *= 0.9;
     blindSpots.push(wx.blindSpot);
@@ -1006,16 +1191,29 @@ export function buildGameModel(
   // them as two independent guesses.
   let lambdaHome: number | undefined;
   let lambdaAway: number | undefined;
+  let marginForGrid = blendedMargin;
+  let lambdaClamped = false;
   if (usesCountModel(game.league)) {
     const totalForLambda = blendedTotal ?? lm.avgTotal;
-    lambdaHome = Math.max(0.1, (totalForLambda + blendedMargin) / 2);
-    lambdaAway = Math.max(0.1, (totalForLambda - blendedMargin) / 2);
+    const derived = deriveLambdas(game.league, totalForLambda, blendedMargin);
+    lambdaHome = derived.lambdaHome;
+    lambdaAway = derived.lambdaAway;
+    lambdaClamped = derived.clamped;
+    // Use the constrained margin everywhere, so the reported projection and
+    // the distribution that prices the legs cannot disagree.
+    marginForGrid = derived.margin;
+    if (derived.clamped) {
+      blindSpots.push(
+        `projected margin of ${blendedMargin.toFixed(1)} is impossible against a ${totalForLambda.toFixed(1)} total — pulled back to ${derived.margin.toFixed(1)}`,
+      );
+      infoQuality *= 0.7;
+    }
   }
 
   // One joint object; the margin and total distributions are its marginals.
   const grid = buildScoreGrid({
     league: game.league,
-    margin: blendedMargin,
+    margin: marginForGrid,
     total: blendedTotal ?? lm.avgTotal,
     marginSd: sigma,
     totalSd: totalSigma,
@@ -1031,12 +1229,18 @@ export function buildGameModel(
     totalSigma,
     marketMargin,
     modelMargin,
-    blendedMargin,
+    blendedMargin: marginForGrid,
+    marginClamped: lambdaClamped,
     modelWeight,
     marginBasis,
     marketHomeWinProb,
     vig,
     shinZ,
+    marginDisagreement:
+      marginDisagreement === null
+        ? null
+        : Number(marginDisagreement.toFixed(2)),
+    spreadDistrusted,
     sampleGames,
     marketTotal,
     modelTotal:
@@ -1333,6 +1537,18 @@ function makeLeg(input: LegInput): SgpLeg {
       value: `${(push * 100).toFixed(1)}% (stake returned)`,
     });
   }
+  if (input.gm.spreadDistrusted) {
+    stats.push({
+      label: "Market conflict",
+      value: `spread and moneyline disagree by ${Math.abs(input.gm.marginDisagreement ?? 0).toFixed(1)} ${LEAGUE_MODEL[input.game.league].unit} — moneyline used`,
+    });
+  }
+  if (input.gm.marginClamped) {
+    stats.push({
+      label: "Projection",
+      value: "pulled back: the raw margin was impossible against this total",
+    });
+  }
   if (input.gm.parkFactor !== 1) {
     const pf = input.gm.parkFactor;
     stats.push({
@@ -1360,9 +1576,14 @@ function makeLeg(input: LegInput): SgpLeg {
     });
   }
 
+  const saturated =
+    input.modelProb >= SATURATION_CEILING ||
+    input.modelProb <= 1 - SATURATION_CEILING;
+
   return {
     id: input.id,
     gameId: input.game.id,
+    saturated,
     league: input.game.league,
     matchup: `${input.game.away.abbreviation} @ ${input.game.home.abbreviation}`,
     market: input.market,
@@ -1871,7 +2092,13 @@ export function buildRecommendation(
   cap = 10,
   maxPerGame = 1,
 ): SgpRecommendation {
-  const ranked = [...candidates].sort((a, b) => legScore(b) - legScore(a));
+  // Drop saturated legs before ranking. They would otherwise rank well — a
+  // 99.9% probability against any price looks like enormous edge — while
+  // being the one part of the distribution we can least justify. See
+  // SATURATION_CEILING.
+  const excluded = candidates.filter((l) => l.saturated);
+  const usable = candidates.filter((l) => !l.saturated);
+  const ranked = [...usable].sort((a, b) => legScore(b) - legScore(a));
   const perGame = new Map<string, number>();
   const legs: SgpLeg[] = [];
 
@@ -1977,6 +2204,7 @@ export function buildRecommendation(
   const notes: string[] = [
     `Model ${MODEL_VERSION}: one projected margin and one projected total per game, from opponent-adjusted team ratings — an offense/defense pair solved from recent results so strength of schedule is divided out, with each game weighted by how recently it was played. Because the margin is net(home) − net(away) + home edge by construction, it is the same arithmetic the total uses, so the two markets can't contradict each other. Shrunk toward the de-vigged market by at most ${Math.round(MAX_MODEL_WEIGHT * 100)}% on the margin and ${Math.round(MAX_TOTAL_WEIGHT * 100)}% on the total; games with no results window fall back to unadjusted scoring rates (${Math.round(MAX_SCORING_WEIGHT * 100)}%), then a log5 record prior (${Math.round(MAX_RECORD_WEIGHT * 100)}%), then the market alone.`,
     "The book's margin is removed with Shin's method rather than by proportional normalization. Books load more margin onto longshots, so splitting it evenly overstates a longshot's fair price and understates a heavy favourite's — which would read as free edge on exactly the short moneylines a parlay is built from.",
+    "Only true point spreads are read as the market's projected margin. A hockey puck line or baseball run line is fixed at ±1.5 and priced through its odds, so those games take their margin from the moneyline instead. The spread and the moneyline are also cross-checked against each other in probability space: when they disagree by more than 10 points about who wins, the spread is the signal more likely to have been misparsed, so the moneyline wins and the game is flagged.",
     "Margin spread scales with the posted total rather than being a league constant: more scoring means more variance. The count-model sports get this automatically, since a Poisson difference takes its variance from the projected scores.",
     "Each game is modelled as a joint distribution over the two final scores, and every market is a marginal of that one object. This makes a same-game slip exact rather than approximate: a margin leg and a total leg are scored against outcomes that can actually occur together, including the parity constraint the old independent model violated (a total of 6 with a margin of 1 cannot happen).",
     "Baseball totals carry a park factor, because our scoring inputs are season aggregates across every park a team visited while the posted total is park-specific — Coors and Petco differ by nearly 20% in run environment, and without this our projection was systematically low in one and high in the other.",
@@ -1988,6 +2216,11 @@ export function buildRecommendation(
     "Line movement since the market opened is reported and folded into confidence, but never into the probability: the current price already contains it, so adding it again would double-count the same information.",
     "Back-to-backs are read from the last two days of results and applied inside our projection (NBA/NCAAB ~1.5-1.8 pts, NHL ~0.2 goals), so a rested team is never credited twice.",
   ];
+  if (excluded.length > 0) {
+    notes.push(
+      `${excluded.length} leg${excluded.length === 1 ? "" : "s"} were left out for being near-certainties (${excluded.map((l) => l.selection).slice(0, 3).join(", ")}${excluded.length > 3 ? ", …" : ""}). At those probabilities the published figure is a clamp rather than an estimate, the expected-value and Kelly numbers derived from it are meaningless, and the market prices the same near-certainty — so there is nothing there to act on.`,
+    );
+  }
   if (basisCounts.ratings || basisCounts.scoring) {
     notes.push(
       `${basisCounts.ratings ?? 0} of ${legs.length} legs are backed by schedule-adjusted ratings, ${basisCounts.scoring ?? 0} by unadjusted scoring rates, ${basisCounts.record ?? 0} by season record alone and ${basisCounts.market ?? 0} by the market only.`,

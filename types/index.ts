@@ -315,6 +315,12 @@ export interface SgpLeg {
   confidenceFactors: SgpConfidenceFactor[];
 
   modelMeta?: SgpLegModelMeta;
+  /**
+   * True when the probability is so extreme that it is a statement about the
+   * game rather than a usable price, and the published figure is a clamp
+   * rather than an estimate. These are excluded from the slip.
+   */
+  saturated?: boolean;
 }
 
 export interface SgpRecommendation {

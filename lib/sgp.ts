@@ -49,7 +49,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "signal-v9";
+export const MODEL_VERSION = "survey-v10";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math

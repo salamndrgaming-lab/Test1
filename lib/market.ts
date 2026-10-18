@@ -39,6 +39,36 @@ export const MIN_PLAUSIBLE_VIG = 0.015;
 /** A two-way market holding more than this is too loose to inform a benchmark. */
 export const MAX_PLAUSIBLE_VIG = 0.15;
 
+/**
+ * Providers that are NOT bookmakers.
+ *
+ * ESPN mixes model and aggregator feeds in with the sportsbooks. Counting a
+ * consensus line as an independent quote would be a serious error for the
+ * statistics built on top: the consensus is DERIVED from the books, so
+ * including it shrinks the measured dispersion and makes fair value look more
+ * precisely known than it is — inflating confidence with a number that
+ * carries no new information. Prediction models are worse, since they are not
+ * prices at all and nothing can be bet into them.
+ */
+const NON_BOOK_PROVIDERS = [
+  "consensus",
+  "teamrankings",
+  "numberfire",
+  "accuscore",
+  "fpi",
+  "predictor",
+  "projection",
+  "average",
+  "median",
+  "aggregate",
+];
+
+export function isBookmaker(name: string | undefined): boolean {
+  if (!name) return false;
+  const n = name.toLowerCase();
+  return !NON_BOOK_PROVIDERS.some((bad) => n.includes(bad));
+}
+
 export interface ConsensusSide {
   /** De-vigged probability across books, inverse-vig weighted. */
   fairProbability: number;
@@ -107,6 +137,10 @@ function collect(
 ): Quote[] {
   const out: Quote[] = [];
   for (const b of books) {
+    // Defence in depth: the providers are filtered where they are parsed, but
+    // the standard error underpinning confidence is computed HERE, so this is
+    // where it must not be possible for a derived feed to slip in.
+    if (!isBookmaker(b.book)) continue;
     const [home, away] = pick(b);
     if (
       home == null ||

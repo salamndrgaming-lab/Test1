@@ -7,10 +7,14 @@ import type {
   CompletedGame,
   MarketOdds,
   ProbablePitcher,
+  Team,
   TeamInjuryReport,
   TeamScoring,
 } from "@/types";
 import { fetchJson } from "./withFallback";
+import { isBookmaker } from "@/lib/market";
+
+export { isBookmaker };
 import { americanToDecimal, impliedProbability, removeVig } from "@/lib/sgp";
 
 // ESPN unofficial scoreboard endpoints (keyless). The same response carries
@@ -337,6 +341,7 @@ export async function fetchEspn(
                   ? abs
                   : q.spread;
           }
+          if (!isBookmaker(q.provider?.name)) continue;
           books.push({
             book: q.provider?.name ?? `book ${books.length + 1}`,
             homeMoneyline: qHomeMl,
@@ -544,6 +549,158 @@ export async function fetchTeamScoring(
     if (r.status !== "fulfilled") continue;
     const { league, data } = r.value;
     Object.assign(out, parseScoringResponse(league, data));
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * Per-event odds: every bookmaker ESPN lists
+ * ------------------------------------------------------------------ *
+ * The scoreboard embeds one or two providers. ESPN's core API has a dedicated
+ * per-event odds endpoint that enumerates all of them, which is the whole
+ * basis for measuring a price edge and a standard error on fair value — with
+ * one quote, "edge against the consensus" is circular.
+ *
+ * Costs one request per game, so it is capped and run in parallel, and a
+ * failure degrades to whatever the scoreboard carried.
+ */
+
+/** Core API paths differ from the site API's: sport/leagues/league. */
+const CORE_PATH: Record<League, string> = {
+  NFL: "football/leagues/nfl",
+  NBA: "basketball/leagues/nba",
+  MLB: "baseball/leagues/mlb",
+  NHL: "hockey/leagues/nhl",
+  NCAAF: "football/leagues/college-football",
+  NCAAB: "basketball/leagues/mens-college-basketball",
+};
+
+interface EspnOddsCollection {
+  items?: EspnOdds[];
+}
+
+/**
+ * Map a collection of provider odds to book prices for one game.
+ *
+ * `homeAbbr`/`awayAbbr` resolve each book's spread onto the home side; a book
+ * whose details string names neither team keeps ESPN's raw `spread`, which is
+ * the favourite's, and is therefore only trustworthy in magnitude.
+ */
+export function parseOddsItems(
+  items: EspnOdds[] | undefined,
+  homeAbbr: string,
+  awayAbbr: string,
+): BookPrice[] {
+  const out: BookPrice[] = [];
+  const seen = new Set<string>();
+
+  for (const q of items ?? []) {
+    const name = q.provider?.name;
+    if (!isBookmaker(name)) continue;
+    const key = (name ?? "").toLowerCase();
+    if (seen.has(key)) continue;
+
+    const det = parseDetails(q.details);
+    let spread = q.spread;
+    if (det.abbr && det.line != null) {
+      const abs = Math.abs(det.line);
+      if (det.abbr === homeAbbr) spread = -abs;
+      else if (det.abbr === awayAbbr) spread = abs;
+    }
+
+    const price: BookPrice = {
+      book: name!,
+      homeMoneyline: extractMoneyline(q.homeTeamOdds),
+      awayMoneyline: extractMoneyline(q.awayTeamOdds),
+      spread,
+      spreadHomeOdds: q.homeTeamOdds?.spreadOdds,
+      spreadAwayOdds: q.awayTeamOdds?.spreadOdds,
+      total: q.overUnder,
+      overOdds: q.overOdds,
+      underOdds: q.underOdds,
+    };
+    // A provider with no usable price on any market is not a quote.
+    const anyPrice =
+      price.homeMoneyline != null ||
+      price.awayMoneyline != null ||
+      price.spreadHomeOdds != null ||
+      price.overOdds != null;
+    if (!anyPrice) continue;
+
+    seen.add(key);
+    out.push(price);
+  }
+  return out;
+}
+
+/** Merge two book lists, preferring the first on a name collision. */
+export function mergeBooks(
+  preferred: BookPrice[],
+  fallback: BookPrice[],
+): BookPrice[] {
+  const out = [...preferred];
+  const seen = new Set(preferred.map((b) => b.book.toLowerCase()));
+  for (const b of fallback) {
+    const key = b.book.toLowerCase();
+    if (seen.has(key) || !isBookmaker(b.book)) continue;
+    seen.add(key);
+    out.push(b);
+  }
+  return out;
+}
+
+/**
+ * Every bookmaker's prices for the given games, keyed by game id.
+ *
+ * Best-effort and bounded: games are capped, requests run in parallel, and
+ * any game that fails simply keeps whatever the scoreboard carried.
+ */
+export async function fetchEventOdds(
+  games: {
+    id: string;
+    league: League;
+    home: Team;
+    away: Team;
+    startTime?: string;
+  }[],
+  signal: AbortSignal,
+  cap = 20,
+): Promise<Record<string, BookPrice[]>> {
+  // A Saturday college slate can be a hundred games, so the cap matters —
+  // and it should keep the games nearest to starting rather than whatever
+  // order the scoreboard happened to return.
+  const targets = [...games]
+    .sort((a, b) => {
+      const ta = a.startTime ? Date.parse(a.startTime) : Infinity;
+      const tb = b.startTime ? Date.parse(b.startTime) : Infinity;
+      return (Number.isFinite(ta) ? ta : Infinity) - (Number.isFinite(tb) ? tb : Infinity);
+    })
+    .slice(0, cap);
+  if (targets.length === 0) return {};
+
+  const results = await Promise.allSettled(
+    targets.map(async (g) => {
+      const path = CORE_PATH[g.league];
+      if (!path) return { id: g.id, books: [] as BookPrice[] };
+      const data = await fetchJson<EspnOddsCollection>(
+        `https://sports.core.api.espn.com/v2/sports/${path}/events/${encodeURIComponent(g.id)}/competitions/${encodeURIComponent(g.id)}/odds`,
+        signal,
+      );
+      return {
+        id: g.id,
+        books: parseOddsItems(
+          data.items,
+          g.home.abbreviation,
+          g.away.abbreviation,
+        ),
+      };
+    }),
+  );
+
+  const out: Record<string, BookPrice[]> = {};
+  for (const r of results) {
+    if (r.status !== "fulfilled" || r.value.books.length === 0) continue;
+    out[r.value.id] = r.value.books;
   }
   return out;
 }

@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
-import type { League, ProviderResult, SgpRecommendation } from "@/types";
+import type {
+  BookPrice,
+  League,
+  ProviderResult,
+  SgpRecommendation,
+} from "@/types";
 import {
   fetchEspn,
+  fetchEventOdds,
   fetchInjuries,
+  mergeBooks,
   fetchResultsWindow,
   fetchTeamScoring,
 } from "@/lib/providers/espn";
@@ -33,15 +40,31 @@ export async function GET() {
           .map((g) => g.league),
       ),
     ];
-    const [scoring, results, injuries, weather] = active.length
+    // Games we will actually price, which is all the per-event odds endpoint
+    // needs to be asked about.
+    const priced = games.filter(
+      (g) => g.status !== "final" && odds.some((o) => o.gameId === g.id),
+    );
+
+    const [scoring, results, injuries, weather, eventOdds] = active.length
       ? await Promise.all([
           fetchTeamScoring(active, controller.signal),
           fetchResultsWindow(active, controller.signal),
           fetchInjuries(active, controller.signal),
           // One request covers the whole slate, and only outdoor venues.
           fetchGameWeather(games, controller.signal),
+          // One request per game: every bookmaker ESPN lists. This is what
+          // makes a price edge and a standard error on fair value measurable.
+          fetchEventOdds(priced, controller.signal),
         ])
-      : [{}, [], {}, {}];
+      : [{}, [], {}, {}, {} as Record<string, BookPrice[]>];
+
+    // Prefer the per-event survey, keep the scoreboard's book as a fallback.
+    const enrichedOdds = odds.map((o) => {
+      const fromEvent = eventOdds[o.gameId];
+      if (!fromEvent || fromEvent.length === 0) return o;
+      return { ...o, books: mergeBooks(fromEvent, o.books ?? []) };
+    });
 
     // One results window feeds both the ratings solve and the schedule model.
     const asOf = Date.now();
@@ -50,7 +73,7 @@ export async function GET() {
 
     const legs = legsFromGames(
       games,
-      odds,
+      enrichedOdds,
       gameLinks,
       scoring,
       schedule,

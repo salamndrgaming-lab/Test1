@@ -363,6 +363,14 @@ export interface SgpLeg {
   priceEdge?: number;
   /** Probability spread between the best and worst book on this side. */
   priceDispersion?: number;
+  /** Standard error of the consensus fair probability, from book dispersion. */
+  fairStandardError?: number;
+  /**
+   * priceEdge / fairStandardError — how many standard errors the price sits
+   * from fair value. Below about 2 the "edge" is inside the books' own
+   * disagreement and is noise rather than value.
+   */
+  edgeSignificance?: number;
 }
 
 export interface SgpRecommendation {
@@ -373,8 +381,14 @@ export interface SgpRecommendation {
   combinedAmericanOdds: number;
   /** Break-even probability implied by the combined price. */
   impliedProbability: number;
-  /** Correlation-adjusted probability that every leg wins. */
+  /** Correlation-adjusted probability that every leg wins, per our model. */
   modelProbability: number;
+  /**
+   * The same thing with market marginals and only the model's correlation
+   * structure. This is what expected value is computed from — see
+   * jointFairProbability.
+   */
+  fairProbability: number;
   /** Naive product of leg probabilities (ignores same-game correlation). */
   naiveProbability: number;
   /** Fair price at our adjusted probability. */

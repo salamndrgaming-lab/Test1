@@ -19,6 +19,7 @@ import { formatOdds } from "@/lib/format";
 import { RATING_PARAMS } from "@/lib/ratings";
 import {
   buildGameConsensus,
+  UNKNOWN_FAIR_SE,
   type ConsensusSide,
 } from "@/lib/market";
 import {
@@ -48,7 +49,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "market-v8";
+export const MODEL_VERSION = "signal-v9";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -315,6 +316,19 @@ export const MAX_SIGNAL_DISAGREEMENT = 0.1;
  * betting opinions.
  */
 export const SATURATION_CEILING = 0.97;
+
+/**
+ * How many standard errors an edge must clear to count as a value leg.
+ *
+ * The books disagree with each other by some amount on every market. An
+ * apparent edge smaller than that disagreement is not an edge — it is one
+ * book's rounding sitting inside the spread of opinion, and acting on it is
+ * acting on noise. Two standard errors is the conventional bar and it is the
+ * difference between "a price exists that is better than fair" and "a price
+ * exists that is better than our estimate of fair, by less than our estimate's
+ * own error".
+ */
+export const MIN_EDGE_SIGNIFICANCE = 2;
 
 /**
  * Projected scores for the count sports, derived from a projected total and
@@ -639,11 +653,20 @@ export const MAX_MODEL_WEIGHT = 0.35;
 export const MAX_SCORING_WEIGHT = 0.28;
 
 /**
- * A win%-only prior (no scoring data) is materially weaker than a points
- * for/against one — two 10-6 teams can have opposite point differentials — so
- * it gets a smaller vote.
+ * A win%-only prior gets NO vote.
+ *
+ * It was on 20% because it was better than nothing. On reflection it isn't:
+ * win% cannot separate two 10-6 teams with opposite point differentials, it
+ * cannot produce a totals opinion at all, and it is the one input in the model
+ * with no measured support of any kind. Meanwhile it is the input that fires
+ * precisely when we know least — no results window, no scoring data — which
+ * is exactly when deferring to the market is the right answer.
+ *
+ * Shrinking an uninformative signal toward the market still moves the number;
+ * it just moves it by a smaller random amount. Removing it entirely is the
+ * honest version. The record is still PARSED and displayed as context.
  */
-export const MAX_RECORD_WEIGHT = 0.2;
+export const MAX_RECORD_WEIGHT = 0;
 
 /** Totals are the sharpest market of the three, so we lean on it hardest. */
 export const MAX_TOTAL_WEIGHT = 0.3;
@@ -1086,6 +1109,8 @@ export function buildGameModel(
     const neutralHomeWin = log5(homeRec.winPct, awayRec.winPct);
     modelMargin =
       sigma * normalQuantile(clamp(neutralHomeWin, 0.02, 0.98)) + lm.homeEdge;
+    // Recorded as the basis for display, but with zero weight: see
+    // MAX_RECORD_WEIGHT. The projection falls through to the market.
     marginBasis = "record";
     maxWeight = MAX_RECORD_WEIGHT;
   }
@@ -1377,47 +1402,99 @@ export interface ConfidenceResult {
 export function computeConfidence(opts: {
   sampleGames: number;
   priorGames: number;
-  modelProb: number;
-  marketProb: number;
   vig: number;
   isModelled: boolean;
   movement?: MovementRead | null;
   basis?: GameModel["marginBasis"];
   infoQuality?: number;
   blindSpots?: string[];
+  /** The market survey for this side, which is what edge is measured against. */
+  consensus?: ConsensusSide;
 }): ConfidenceResult {
   const {
     sampleGames,
     priorGames,
-    modelProb,
-    marketProb,
     vig,
     isModelled,
     movement,
     basis,
     infoQuality = 1,
     blindSpots = [],
+    consensus,
   } = opts;
 
   const sample = clamp(sampleGames / (sampleGames + priorGames), 0, 1);
-  const divergence = Math.abs(modelProb - marketProb);
-  // 0 divergence -> 1.0 ; 15pp divergence -> ~0.0
-  const agreement = clamp(1 - divergence / 0.15, 0, 1);
   // 2% hold -> ~1.0 ; 10% hold -> ~0.0
   const priceQuality = clamp(1 - (vig - 0.02) / 0.08, 0, 1);
   // Unknown movement is neutral (0.5), not a penalty.
   const confirmation =
     movement == null ? 0.5 : clamp((movement.agreement + 1) / 2, 0, 1);
 
+  /*
+   * Confidence is confidence in the EDGE, and edge is now a statement about
+   * the price. So the question it answers is "how sure are we that this price
+   * is better than the bet is worth?" — which has two measurable parts.
+   *
+   * The old formula's largest single term was "market agreement": confidence
+   * fell as our projection diverged from the market. That had to go. It was a
+   * reasonable proxy when the model's disagreement WAS the edge, but edge no
+   * longer depends on the projection at all, so the term was penalising
+   * confidence for something that can no longer affect the number — noise
+   * with a weight attached. Worse, it made confidence and edge
+   * anti-correlated by construction.
+   */
+  const se = consensus?.standardError ?? UNKNOWN_FAIR_SE;
+  const booksSeen = consensus?.books ?? 1;
+  // How precisely we know fair value. 0.4pp of SE reads as precise; 3pp does not.
+  const benchmarkPrecision = clamp(1 - (se - 0.004) / 0.026, 0, 1);
+  // Independent quotes. One book is unverifiable; four is a real survey.
+  const survey = clamp((booksSeen - 1) / 3, 0, 1);
+
+  /*
+   * Edge significance is deliberately NOT a term here, though it was in the
+   * first version of this formula and it broke the thing it was meant to
+   * measure: markets whose books scattered scored HIGHER confidence (0.635)
+   * than markets whose books agreed (0.619), because wide dispersion produces
+   * a big gap between the best price and the consensus, and that fed
+   * significance faster than it drained precision.
+   *
+   * Confidence and value have to stay orthogonal. Confidence answers "how
+   * well do we know fair value and our inputs"; significance answers "is this
+   * gap bigger than our uncertainty about fair value". Feeding the second
+   * into the first makes confidence rise with edge, so a leg ranks higher for
+   * being more profitable rather than for being better understood — which is
+   * how a model talks itself into its own worst picks. Significance stays as
+   * the screening gate and on the card, where it belongs.
+   */
   const base =
-    0.26 * sample +
-    0.2 * agreement +
-    0.2 * priceQuality +
-    0.16 * confirmation +
-    0.18 * clamp(infoQuality, 0, 1);
-  // An unmodelled market scores perfect "agreement" only because the model IS
-  // the market — that must never read as confidence, so gate it hard.
-  const score = clamp(isModelled ? base : Math.min(base * 0.35, 0.3), 0, 1);
+    0.34 * benchmarkPrecision +
+    0.24 * survey +
+    0.18 * priceQuality +
+    0.14 * clamp(infoQuality, 0, 1) +
+    0.05 * sample +
+    0.05 * confirmation;
+
+  /*
+   * With a single book there is nothing to verify fair value against: the
+   * benchmark is that book's own de-vigged price, so "edge against it" is
+   * circular. Cap confidence hard, because the honest statement is that we
+   * cannot tell.
+   */
+  const unverified = booksSeen < 2;
+  let score = clamp(base, 0, 1);
+  /*
+   * Scaled rather than capped. A hard ceiling flattened every single-book leg
+   * to the same number, which threw away real information: whether the line
+   * had moved our way, whether players were out, how much scoring data was
+   * behind the projection. Those still differentiate one unverified leg from
+   * another even when none of them can be verified. Halving preserves the
+   * ordering while keeping the level honestly low — a one-book leg can reach
+   * "medium" but never "high".
+   */
+  if (unverified) score *= 0.5;
+  // An unmodelled market has no directional view of its own — that must never
+  // read as confidence in a forecast, though the PRICE edge can still be real.
+  if (!isModelled) score = Math.min(score, consensus && booksSeen > 1 ? 0.55 : 0.3);
 
   const level: Confidence = score >= 0.7 ? "high" : score >= 0.45 ? "medium" : "low";
 
@@ -1436,9 +1513,26 @@ export function computeConfidence(opts: {
             : `${sampleGames} games of record behind the prior`,
       },
       {
-        label: "Market agreement",
-        value: Number(agreement.toFixed(2)),
-        note: `model differs from market by ${(divergence * 100).toFixed(1)}pp`,
+        label: "Fair value precision",
+        value: Number(benchmarkPrecision.toFixed(2)),
+        note: consensus && booksSeen > 1
+          ? `${booksSeen} books agree to within ±${(se * 100).toFixed(1)}pp`
+          : "one book only — fair value can't be verified",
+      },
+      {
+        // Reported, but not part of the score — see the note in the formula.
+        label: "Edge vs noise",
+        value: consensus
+          ? Number(clamp(consensus.edgeSignificance / 4, 0, 1).toFixed(2))
+          : 0,
+        note: consensus
+          ? `edge is ${consensus.edgeSignificance.toFixed(1)}× the books' own disagreement (screening only, not scored)`
+          : "no survey to measure against",
+      },
+      {
+        label: "Books surveyed",
+        value: Number(survey.toFixed(2)),
+        note: `${booksSeen} independent quote${booksSeen === 1 ? "" : "s"}`,
       },
       {
         label: "Price quality",
@@ -1597,14 +1691,13 @@ function makeLeg(input: LegInput): SgpLeg {
         ? (RATING_PARAMS[input.game.league]?.priorGames ??
            LEAGUE_MODEL[input.game.league].priorGames)
         : LEAGUE_MODEL[input.game.league].priorGames,
-    modelProb: input.modelProb,
-    marketProb: benchmark,
     vig: input.gm.vig,
     isModelled: input.isModelled,
     movement,
     basis: input.gm.marginBasis,
     infoQuality: input.gm.infoQuality,
     blindSpots: input.gm.blindSpots,
+    consensus: con,
   });
   // Movement is surfaced as a header chip and a confidence factor, so it
   // deliberately doesn't get a third copy in the stat chips.
@@ -1638,7 +1731,10 @@ function makeLeg(input: LegInput): SgpLeg {
     });
     stats.push({
       label: "Price edge",
-      value: `${con.priceEdge >= 0 ? "+" : ""}${(con.priceEdge * 100).toFixed(1)}pp vs consensus fair`,
+      value:
+        `${con.priceEdge >= 0 ? "+" : ""}${(con.priceEdge * 100).toFixed(1)}pp vs consensus fair ` +
+        `(±${(con.standardError * 100).toFixed(1)}pp, ${con.edgeSignificance.toFixed(1)}σ` +
+        `${con.edgeSignificance >= MIN_EDGE_SIGNIFICANCE ? "" : " — inside noise"})`,
     });
   }
   if (input.gm.spreadDistrusted) {
@@ -1693,6 +1789,8 @@ function makeLeg(input: LegInput): SgpLeg {
     booksSurveyed: con?.books ?? 1,
     priceEdge: priceEdge === null ? undefined : priceEdge,
     priceDispersion: con?.priceDispersion,
+    fairStandardError: con?.standardError,
+    edgeSignificance: con?.edgeSignificance,
     league: input.game.league,
     matchup: `${input.game.away.abbreviation} @ ${input.game.home.abbreviation}`,
     market: input.market,
@@ -1701,7 +1799,9 @@ function makeLeg(input: LegInput): SgpLeg {
     modelProbability: Number(input.modelProb.toFixed(4)),
     marketProbability: Number(benchmark.toFixed(4)),
     breakEvenProbability: Number(rawImplied.toFixed(4)),
-    fairAmericanOdds: fairAmericanOdds(input.modelProb),
+    // Fair odds at the CONSENSUS, not at our projection: a "fair price" built
+    // from an unvalidated forecast is the same inflation as a model-based EV.
+    fairAmericanOdds: fairAmericanOdds(benchmark),
     edge: Number(edge.toFixed(4)),
     expectedValue: Number(expectedValue(benchmark, decimal).toFixed(4)),
     kellyFraction: Number(kellyFraction(benchmark, decimal).toFixed(4)),
@@ -2138,6 +2238,34 @@ export function jointProbability(legs: SgpLeg[]): number {
   return joint;
 }
 
+/**
+ * The slip's probability with MARKET marginals and only the model's
+ * correlation structure.
+ *
+ * The leg-level fix moved edge onto the price but left the slip computing its
+ * expected value from `jointProbability`, which is the model's view — so the
+ * same inflation survived one level up. The honest construction separates the
+ * two things the joint probability is made of:
+ *
+ *  - the MARGINALS, i.e. how likely each leg is, which the consensus knows
+ *    better than we do, and
+ *  - the CORRELATION, i.e. how much more likely the legs are together than
+ *    their product suggests, which is a structural fact about the sport
+ *    (nested thresholds, score parity) rather than a forecast.
+ *
+ * So take the marginals from the market and borrow only the correlation ratio
+ * from the model.
+ */
+export function jointFairProbability(legs: SgpLeg[]): number {
+  if (legs.length === 0) return 0;
+  const naiveFair = legs.reduce((acc, l) => acc * l.marketProbability, 1);
+  const modelNaive = legs.reduce((acc, l) => acc * l.modelProbability, 1);
+  const modelJoint = jointProbability(legs);
+  // The uplift is 1 for a cross-game slip and >1 for nested same-game legs.
+  const uplift = modelNaive > 0 ? modelJoint / modelNaive : 1;
+  return clamp(naiveFair * uplift, 0.0001, 0.9999);
+}
+
 /** True when a slip contains more than one leg from the same game. */
 export function hasCorrelatedLegs(legs: SgpLeg[]): boolean {
   const seen = new Set<string>();
@@ -2162,6 +2290,8 @@ export interface PayoutBreakdown {
   impliedProbability: number;
   /** Our correlation-adjusted probability that the slip wins. */
   modelProbability: number;
+  /** Market marginals with the model's correlation — the basis for EV. */
+  fairProbability: number;
   /** Naive product of leg probabilities (ignores same-game correlation). */
   naiveProbability: number;
   /** Expected profit/loss on this stake. */
@@ -2176,6 +2306,7 @@ export function calculatePayout(
   const decimalOdds = combineLegs(legs);
   const payout = stake * decimalOdds;
   const adjusted = jointProbability(legs);
+  const fairJoint = jointFairProbability(legs);
   const naive = legs.reduce((acc, l) => acc * l.modelProbability, 1);
   return {
     stake,
@@ -2187,8 +2318,9 @@ export function calculatePayout(
     modelProbability: Number(adjusted.toFixed(4)),
     naiveProbability: Number(naive.toFixed(4)),
     expectedValue: Number(
-      (stake * expectedValue(adjusted, decimalOdds)).toFixed(2),
+      (stake * expectedValue(fairJoint, decimalOdds)).toFixed(2),
     ),
+    fairProbability: Number(fairJoint.toFixed(4)),
     correlated: hasCorrelatedLegs(legs),
   };
 }
@@ -2270,7 +2402,15 @@ export function buildRecommendation(
     .map((l) => l.priceEdge)
     .filter((e): e is number => e != null);
   const bestPriceEdge = priceEdges.length > 0 ? Math.max(...priceEdges) : 0;
-  const valueLegs = usable.filter((l) => legEdge(l) > 0).length;
+  // A positive sign is not enough: the edge has to clear the books' own
+  // disagreement. See MIN_EDGE_SIGNIFICANCE.
+  const isValue = (l: SgpLeg) =>
+    legEdge(l) > 0 &&
+    (l.edgeSignificance ?? 0) >= MIN_EDGE_SIGNIFICANCE;
+  const valueLegs = usable.filter(isValue).length;
+  const marginalLegs = usable.filter(
+    (l) => legEdge(l) > 0 && !isValue(l),
+  ).length;
   const meanVigRaw =
     candidates.length > 0
       ? candidates.reduce((acc, l) => acc + (l.breakEvenProbability - l.marketProbability), 0) /
@@ -2329,7 +2469,12 @@ export function buildRecommendation(
     },
     {
       label: "Value legs",
-      detail: valueLegs > 0 ? `${valueLegs} beat consensus` : "none today",
+      detail:
+        valueLegs > 0
+          ? `${valueLegs} clear ${MIN_EDGE_SIGNIFICANCE}σ`
+          : marginalLegs > 0
+            ? `0 — ${marginalLegs} inside noise`
+            : "none today",
     },
     {
       label: "Distribution",
@@ -2364,7 +2509,7 @@ export function buildRecommendation(
   ];
 
   const notes: string[] = [
-    `Model ${MODEL_VERSION}: one projected margin and one projected total per game, from opponent-adjusted team ratings — an offense/defense pair solved from recent results so strength of schedule is divided out, with each game weighted by how recently it was played. Because the margin is net(home) − net(away) + home edge by construction, it is the same arithmetic the total uses, so the two markets can't contradict each other. Shrunk toward the de-vigged market by at most ${Math.round(MAX_MODEL_WEIGHT * 100)}% on the margin and ${Math.round(MAX_TOTAL_WEIGHT * 100)}% on the total; games with no results window fall back to unadjusted scoring rates (${Math.round(MAX_SCORING_WEIGHT * 100)}%), then a log5 record prior (${Math.round(MAX_RECORD_WEIGHT * 100)}%), then the market alone.`,
+    `Model ${MODEL_VERSION}: one projected margin and one projected total per game, from opponent-adjusted team ratings — an offense/defense pair solved from recent results so strength of schedule is divided out, with each game weighted by how recently it was played. Because the margin is net(home) − net(away) + home edge by construction, it is the same arithmetic the total uses, so the two markets can't contradict each other. Shrunk toward the de-vigged market by at most ${Math.round(MAX_MODEL_WEIGHT * 100)}% on the margin and ${Math.round(MAX_TOTAL_WEIGHT * 100)}% on the total; games with no results window fall back to unadjusted scoring rates (${Math.round(MAX_SCORING_WEIGHT * 100)}%), then the market alone. A win%-only prior is deliberately given no weight: it cannot separate two teams with the same record and opposite point differentials, it yields no totals opinion, and it fires exactly when we know least — so it only added motion, not signal.`,
     "The book's margin is removed with Shin's method rather than by proportional normalization. Books load more margin onto longshots, so splitting it evenly overstates a longshot's fair price and understates a heavy favourite's — which would read as free edge on exactly the short moneylines a parlay is built from.",
     "Only true point spreads are read as the market's projected margin. A hockey puck line or baseball run line is fixed at ±1.5 and priced through its odds, so those games take their margin from the moneyline instead. The spread and the moneyline are also cross-checked against each other in probability space: when they disagree by more than 10 points about who wins, the spread is the signal more likely to have been misparsed, so the moneyline wins and the game is flagged.",
     "Margin spread scales with the posted total rather than being a league constant: more scoring means more variance. The count-model sports get this automatically, since a Poisson difference takes its variance from the projected scores.",
@@ -2385,11 +2530,15 @@ export function buildRecommendation(
     );
   } else if (verdict === "no-edge") {
     notes.push(
-      `${maxBooks} bookmakers were surveyed and none is offering a price better than the consensus fair value on any leg. The market looks efficient on this slate, so the honest output is that there is no play — the slip below is the least-bad set, not a recommendation. The best price gap found was ${(bestPriceEdge * 100).toFixed(1)} points, which does not cover the hold.`,
+      `${maxBooks} bookmakers were surveyed and no leg clears the bar. The best price gap found was ${(bestPriceEdge * 100).toFixed(1)} points${
+        marginalLegs > 0
+          ? `, and ${marginalLegs} leg${marginalLegs === 1 ? " shows a" : "s show"} positive gap${marginalLegs === 1 ? "" : "s"} smaller than the books' own disagreement with each other — which is noise, not edge`
+          : ""
+      }. An efficient market producing nothing is the expected result, so the slip below is the least-bad set rather than a recommendation.`,
     );
   } else {
     notes.push(
-      `${valueLegs} of ${usable.length} legs are available at a price better than the consensus fair value across ${maxBooks} books — a gap of up to ${(bestPriceEdge * 100).toFixed(1)} probability points. That edge comes from the PRICE, not from the projection: it is the same bet, at a number one book has moved and the others have not. It is also perishable, since those books move too.`,
+      `${valueLegs} of ${usable.length} legs are available at a price better than the consensus fair value across ${maxBooks} books by at least ${MIN_EDGE_SIGNIFICANCE} standard errors — a gap of up to ${(bestPriceEdge * 100).toFixed(1)} probability points, measured against how far those books disagree with each other. That edge comes from the PRICE, not from the projection: it is the same bet, at a number one book has moved and the others have not. It is also perishable, since those books move too.`,
     );
   }
   if (excluded.length > 0) {
@@ -2402,7 +2551,8 @@ export function buildRecommendation(
       `${basisCounts.ratings ?? 0} of ${legs.length} legs are backed by schedule-adjusted ratings, ${basisCounts.scoring ?? 0} by unadjusted scoring rates, ${basisCounts.record ?? 0} by season record alone and ${basisCounts.market ?? 0} by the market only.`,
     );
   }
-  const ev = expectedValue(adjusted, combinedDecimalOdds);
+  const fairJoint = jointFairProbability(legs);
+  const ev = expectedValue(fairJoint, combinedDecimalOdds);
   if (correlated) {
     notes.push(
       "This slip contains multiple legs from the same game. Those outcomes are correlated, so the true win probability is higher than the naive product — and a sportsbook would price a real same-game parlay well below the combined odds shown.",
@@ -2430,9 +2580,10 @@ export function buildRecommendation(
     ),
     modelProbability: Number(adjusted.toFixed(4)),
     naiveProbability: Number(naive.toFixed(4)),
-    fairAmericanOdds: fairAmericanOdds(adjusted),
+    fairProbability: Number(fairJoint.toFixed(4)),
+    fairAmericanOdds: fairAmericanOdds(fairJoint),
     expectedValue: Number(
-      expectedValue(adjusted, combinedDecimalOdds).toFixed(4),
+      expectedValue(fairJoint, combinedDecimalOdds).toFixed(4),
     ),
     correlated,
     /** EV is only meaningful when the combined price is actually obtainable. */

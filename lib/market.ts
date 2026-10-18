@@ -56,7 +56,36 @@ export interface ConsensusSide {
   meanVig: number;
   /** Spread between the best and worst price available, in probability. */
   priceDispersion: number;
+  /**
+   * Standard error of the consensus fair probability, from how far the
+   * independently de-vigged books disagree with each other.
+   *
+   * This is the first quantity in the whole model that makes confidence
+   * measurable rather than asserted. Every confidence input before it was a
+   * hand-picked weight on a heuristic; this one is estimated from data. Five
+   * books agreeing within half a point means we know fair value precisely;
+   * five books scattered over four points means we do not, whatever the
+   * average happens to be.
+   */
+  standardError: number;
+  /**
+   * priceEdge / standardError. How many standard errors the price sits away
+   * from fair value — i.e. whether an edge is distinguishable from the books
+   * simply disagreeing with each other.
+   */
+  edgeSignificance: number;
 }
+
+/**
+ * Standard error assumed when only one book is available.
+ *
+ * With a single quote there is no dispersion to measure, and pretending the
+ * error is zero would make every tiny gap look significant. This is the
+ * typical book-to-book disagreement on a liquid two-way market, used as a
+ * deliberately conservative stand-in — and legs priced this way are capped in
+ * confidence anyway, because an unverifiable benchmark is exactly that.
+ */
+export const UNKNOWN_FAIR_SE = 0.02;
 
 export interface ConsensusMarket {
   home?: ConsensusSide;
@@ -146,6 +175,38 @@ export function buildConsensus(quotes: Quote[]): ConsensusMarket {
   const fairHome = wSum > 0 ? homeSum / wSum : forConsensus[0].home;
   const meanVig = vigSum / forConsensus.length;
 
+  /*
+   * How precisely do we know fair value? Measured from the dispersion of the
+   * independently de-vigged books, not assumed.
+   *
+   * Both sides of a two-way market share one standard error, because they are
+   * one estimate: the books disagree about the game, not about each side
+   * separately.
+   */
+  const homeProbs = forConsensus.map((f) => f.home);
+  const standardError = (() => {
+    if (homeProbs.length < 2) return UNKNOWN_FAIR_SE;
+    const mean = homeProbs.reduce((a, b) => a + b, 0) / homeProbs.length;
+    const variance =
+      homeProbs.reduce((acc, p) => acc + (p - mean) ** 2, 0) /
+      (homeProbs.length - 1);
+    const measured =
+      Math.sqrt(Math.max(0, variance)) / Math.sqrt(homeProbs.length);
+    /*
+     * A measured standard error from two or three quotes is itself barely
+     * measured. Two books that happen to agree to the decimal produce an SE
+     * near zero, which made a 7.4pp edge read as 37 standard errors — a
+     * precision claim the sample cannot support.
+     *
+     * So never claim to know fair value better than the typical book
+     * disagreement reduced by root-n. With two books that floor is 1.4pp,
+     * with nine it is 0.7pp, and a genuinely wide market still reports its
+     * own larger dispersion.
+     */
+    const floor = UNKNOWN_FAIR_SE / Math.sqrt(homeProbs.length);
+    return Math.max(floor, measured);
+  })();
+
   const side = (
     which: "home" | "away",
     fairProb: number,
@@ -163,12 +224,15 @@ export function buildConsensus(quotes: Quote[]): ConsensusMarket {
     }
     const bestBreakEven = impliedProbability(americanToDecimal(bestVal));
     const worstBreakEven = impliedProbability(americanToDecimal(worstVal));
+    const priceEdge = fairProb - bestBreakEven;
     return {
       fairProbability: Number(fairProb.toFixed(4)),
       bestAmerican: bestVal,
       bestBook: best.book,
       bestBreakEven: Number(bestBreakEven.toFixed(4)),
-      priceEdge: Number((fairProb - bestBreakEven).toFixed(4)),
+      priceEdge: Number(priceEdge.toFixed(4)),
+      standardError: Number(standardError.toFixed(4)),
+      edgeSignificance: Number((priceEdge / standardError).toFixed(2)),
       books: quotes.length,
       meanVig: Number(meanVig.toFixed(4)),
       priceDispersion: Number(

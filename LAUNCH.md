@@ -3,6 +3,30 @@
 This documents what's built and the remaining wiring to charge money. The full
 strategy lives in the plan file; this is the operational checklist.
 
+## Odds feed (do this first if you care about the SGP numbers)
+
+The SGP tool's expected value cannot be positive on one bookmaker. With a
+single price source, the "consensus fair value" it is measured against *is*
+that book's own de-vigged price, so edge equals minus half its hold as a
+matter of arithmetic — around −2.4pp per leg at −110, and about −24% on a
+six-leg slip once the hold compounds. No modelling change moves it.
+
+1. Sign up free at <https://the-odds-api.com> (500 credits/month, no card).
+2. Set `ODDS_API_KEY` in Vercel env and redeploy.
+3. Open `/sports` → SGP. The banner shows **"The Odds API connected"** and the
+   remaining credits; the Model inputs panel's **Books surveyed** row should
+   read more than 1.
+
+Quota notes: a credit is markets × regions per request. We request three
+markets in one region, so each league costs 3 credits. One request per league
+(not per game), each slate cached 5 minutes, and fetching stops with 25
+credits left so a traffic spike cannot strand the month. On a typical two-sport
+day that is roughly 6 credits per 5-minute window of actual use.
+
+If you outgrow the free tier, the same provider's paid tiers and
+odds-api.io / OddsPapi are drop-in alternatives — only `lib/providers/oddsapi.ts`
+would change.
+
 ## ✅ Built (works without external accounts)
 - **Freemium scaffold** — `lib/usePro.ts` (`usePro()`), `components/UpgradeCard.tsx`
   (`ProGate`/`UpgradeCard`), pricing page `app/upgrade/page.tsx`.

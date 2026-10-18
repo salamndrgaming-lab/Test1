@@ -422,6 +422,17 @@ export interface SgpRecommendation {
     meanVig: number;
     /** Best price edge found, in probability points. */
     bestPriceEdge: number;
+    /**
+     * The dedicated multi-book feed, when one is configured. Null means we are
+     * relying on ESPN alone, which usually means a single bookmaker — and with
+     * one book, edge is pinned at minus half its hold by arithmetic.
+     */
+    priceFeed?: {
+      name: string;
+      /** Credits left this month, as the API itself reports them. */
+      remainingCredits: number | null;
+      leaguesCached: number;
+    } | null;
   };
   /** Plain-language notes about the model and its caveats. */
   notes: string[];

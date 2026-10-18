@@ -15,6 +15,7 @@ import {
 } from "@/lib/providers/espn";
 import { buildAllRatings, scheduleFromResults } from "@/lib/ratings";
 import { fetchGameWeather } from "@/lib/providers/gameweather";
+import { fetchOddsApiBooks, oddsApiStatus } from "@/lib/providers/oddsapi";
 import { buildRecommendation, legsFromGames } from "@/lib/sgp";
 
 export const dynamic = "force-dynamic";
@@ -46,7 +47,7 @@ export async function GET() {
       (g) => g.status !== "final" && odds.some((o) => o.gameId === g.id),
     );
 
-    const [scoring, results, injuries, weather, eventOdds] = active.length
+    const [scoring, results, injuries, weather, eventOdds, apiOdds] = active.length
       ? await Promise.all([
           fetchTeamScoring(active, controller.signal),
           fetchResultsWindow(active, controller.signal),
@@ -56,14 +57,28 @@ export async function GET() {
           // One request per game: every bookmaker ESPN lists. This is what
           // makes a price edge and a standard error on fair value measurable.
           fetchEventOdds(priced, controller.signal),
+          // A real multi-book feed, when a key is configured. One request per
+          // league, cached, with the monthly allowance guarded.
+          fetchOddsApiBooks(priced, controller.signal),
         ])
-      : [{}, [], {}, {}, {} as Record<string, BookPrice[]>];
+      : [{}, [], {}, {}, {} as Record<string, BookPrice[]>, {} as Record<string, BookPrice[]>];
 
-    // Prefer the per-event survey, keep the scoreboard's book as a fallback.
+    /*
+     * Merge all three price sources, widest first.
+     *
+     * The Odds API is preferred where present: it returns many bookmakers and
+     * its spreads are keyed by team rather than parsed out of a details
+     * string, so it cannot suffer the sign ambiguity the ESPN path has to
+     * guard against. ESPN's per-event survey comes next, and the
+     * scoreboard-embedded book last. mergeBooks de-duplicates by name and
+     * keeps the earlier source on a collision.
+     */
     const enrichedOdds = odds.map((o) => {
-      const fromEvent = eventOdds[o.gameId];
-      if (!fromEvent || fromEvent.length === 0) return o;
-      return { ...o, books: mergeBooks(fromEvent, o.books ?? []) };
+      const merged = mergeBooks(
+        mergeBooks(apiOdds[o.gameId] ?? [], eventOdds[o.gameId] ?? []),
+        o.books ?? [],
+      );
+      return merged.length > 0 ? { ...o, books: merged } : o;
     });
 
     // One results window feeds both the ratings solve and the schedule model.
@@ -87,8 +102,23 @@ export async function GET() {
       );
     }
     const recommendation = buildRecommendation(legs, 6);
+    // Report the price-feed state so a missing key is visible in the UI
+    // rather than silently degrading to one book.
+    const feed = oddsApiStatus();
     const result: ProviderResult<SgpRecommendation> = {
-      data: recommendation,
+      data: {
+        ...recommendation,
+        marketSurvey: {
+          ...recommendation.marketSurvey,
+          priceFeed: feed.configured
+            ? {
+                name: "The Odds API",
+                remainingCredits: feed.remaining,
+                leaguesCached: feed.leaguesCached,
+              }
+            : null,
+        },
+      },
       source: "live",
       fetchedAt: new Date().toISOString(),
     };

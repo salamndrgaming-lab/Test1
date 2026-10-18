@@ -198,6 +198,27 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
               : "single price source"}
           </span>
         </div>
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-[0.7rem]">
+          <span
+            className={classNames(
+              "rounded px-2 py-0.5",
+              rec.marketSurvey.priceFeed
+                ? "bg-green-500/10 text-green-300"
+                : "bg-amber-500/10 text-amber-300",
+            )}
+            title="A dedicated multi-book feed is the only way edge can be positive. With one bookmaker, edge equals minus half its hold by arithmetic."
+          >
+            {rec.marketSurvey.priceFeed
+              ? `${rec.marketSurvey.priceFeed.name} connected`
+              : "No odds feed — set ODDS_API_KEY"}
+          </span>
+          {rec.marketSurvey.priceFeed?.remainingCredits != null && (
+            <span className="text-[var(--muted-2)]">
+              {rec.marketSurvey.priceFeed.remainingCredits} credits left this
+              month
+            </span>
+          )}
+        </div>
         <p className="text-xs leading-relaxed text-[var(--muted)]">
           {rec.verdict === "value" ? (
             <>

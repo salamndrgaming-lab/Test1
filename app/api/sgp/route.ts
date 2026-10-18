@@ -13,7 +13,8 @@ import {
   fetchResultsWindow,
   fetchTeamScoring,
 } from "@/lib/providers/espn";
-import { buildAllRatings, scheduleFromResults } from "@/lib/ratings";
+import { buildAllRatings, linesAsResults, scheduleFromResults } from "@/lib/ratings";
+import { backtest } from "@/lib/backtest";
 import { fetchGameWeather } from "@/lib/providers/gameweather";
 import { fetchOddsApiBooks, oddsApiStatus } from "@/lib/providers/oddsapi";
 import { buildRecommendation, legsFromGames } from "@/lib/sgp";
@@ -81,10 +82,56 @@ export async function GET() {
       return merged.length > 0 ? { ...o, books: merged } : o;
     });
 
-    // One results window feeds both the ratings solve and the schedule model.
+    // One results window feeds the ratings solve, the schedule model, AND the
+    // measurement that decides how much the model is allowed to vote.
     const asOf = Date.now();
-    const { ratings } = buildAllRatings(results, asOf);
     const schedule = scheduleFromResults(results, asOf);
+
+    /*
+     * Fit the ratings to whichever signal the backtest says predicts better.
+     *
+     * Final scores are a very noisy observation of team strength; closing
+     * lines are the market's much tighter estimate of the same thing, and the
+     * window already contains them. Rather than assume which is better, the
+     * backtest measures it per league and we follow the measurement.
+     */
+    const measured = backtest(results);
+    const linePreference = measured.filter(
+      (m) => m.ratingSource?.better === "lines",
+    );
+    const preferLines = linePreference.length > 0;
+    const trainingSet = preferLines
+      ? // Keep score-based games for leagues with no usable lines.
+        (() => {
+          const lineBased = linesAsResults(results);
+          const covered = new Set(lineBased.map((g) => g.gameId));
+          return [...lineBased, ...results.filter((g) => !covered.has(g.gameId))];
+        })()
+      : results;
+    /*
+     * A closing line is a far tighter read of team strength than a game
+     * result, so it needs far less shrinking — the backtest searches how much
+     * and we use what it found. At the score-calibrated prior the line-fitted
+     * ratings came out at 77% of their true scale.
+     */
+    const priorScale = preferLines
+      ? Math.min(...linePreference.map((m) => m.ratingSource!.bestPriorScale))
+      : 1;
+    const { ratings } = buildAllRatings(trainingSet, asOf, priorScale);
+
+    /*
+     * The model's vote is whatever the regression could justify — the median
+     * across leagues that produced a significant fit, and zero otherwise. No
+     * constant is being chosen here; the data either supports a vote or it
+     * does not.
+     */
+    const votes = measured
+      .map((m) => m.skillFit)
+      .filter((f): f is NonNullable<typeof f> => f != null && f.significant)
+      .map((f) => f.justifiedVote)
+      .sort((a, b) => a - b);
+    const modelVote =
+      votes.length > 0 ? votes[Math.floor(votes.length / 2)] : 0;
 
     const legs = legsFromGames(
       games,
@@ -95,13 +142,14 @@ export async function GET() {
       injuries,
       ratings,
       weather,
+      modelVote,
     );
     if (legs.length === 0) {
       throw new Error(
         "No upcoming games with live odds are posted right now — check back closer to game time.",
       );
     }
-    const recommendation = buildRecommendation(legs, 6);
+    const recommendation = buildRecommendation(legs, 6, 10, 1, modelVote);
     // Report the price-feed state so a missing key is visible in the UI
     // rather than silently degrading to one book.
     const feed = oddsApiStatus();

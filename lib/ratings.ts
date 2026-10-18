@@ -45,6 +45,23 @@ export interface RatingParams {
   priorGames: number;
   /** Fixed-point iterations. Convergence is fast; this is a safety bound. */
   iterations?: number;
+  /**
+   * Multiplier on `priorGames`, for when the training signal is more precise
+   * than a game result.
+   *
+   * Shrinkage exists to stop a noisy observation producing an extreme rating,
+   * so the right amount depends on how noisy the observation is. Fitting to
+   * final scores means each game carries roughly a 12-point standard
+   * deviation of irrelevant noise; fitting to closing lines means each one is
+   * a near-direct read of team strength. Applying the score-calibrated prior
+   * to the line-fitted solve compressed those ratings to 77% of their true
+   * scale while the score-fitted ones sat at 93% — the noisier signal
+   * inflates the apparent spread, and the shrinkage happened to cancel it.
+   * One signal was being corrected for a problem the other didn't have.
+   *
+   * The right value is measured, not asserted: the backtest searches it.
+   */
+  priorScale?: number;
 }
 
 /**
@@ -228,7 +245,8 @@ export function buildRatings(
   const teams: Record<string, TeamRating> = {};
   for (const id of ids) {
     const s = sides.get(id)!;
-    const shrink = s.weight / (s.weight + params.priorGames);
+    const prior = params.priorGames * (params.priorScale ?? 1);
+    const shrink = s.weight / (s.weight + prior);
     const o = (off.get(id) ?? 0) * shrink;
     const d = (def.get(id) ?? 0) * shrink;
     teams[id] = {
@@ -257,10 +275,48 @@ function round(x: number): number {
   return Number(x.toFixed(4));
 }
 
+/**
+ * Re-express completed games so their "result" is the line they closed at.
+ *
+ * Fitting ratings to final scores means fitting to an extremely noisy
+ * observation: an NBA margin has a standard deviation around 12 points, so a
+ * single game tells you remarkably little about the teams. The closing line is
+ * the market's estimate of the SAME quantity with far less noise in it — it is
+ * what thousands of people with better information concluded the margin would
+ * be, and we already have 45 days of them sitting in the results window.
+ *
+ * So this maps each game onto a synthetic score whose margin is the closing
+ * line and whose total is the closing total, letting the existing solver fit
+ * team strength to the market's view instead of to coin flips. Games without
+ * an orientable closing line are dropped rather than falling back to their
+ * score, because mixing the two would mix their noise levels.
+ */
+export function linesAsResults(games: CompletedGame[]): CompletedGame[] {
+  const out: CompletedGame[] = [];
+  for (const g of games) {
+    if (g.closingSpread == null || !Number.isFinite(g.closingSpread)) continue;
+    const margin = -g.closingSpread;
+    const total =
+      g.closingTotal != null && Number.isFinite(g.closingTotal)
+        ? g.closingTotal
+        : g.homeScore + g.awayScore;
+    // Split the total around the line's margin. Halves need not be integers
+    // for the solver, which works in points rather than whole scores.
+    out.push({
+      ...g,
+      homeScore: (total + margin) / 2,
+      awayScore: (total - margin) / 2,
+    });
+  }
+  return out;
+}
+
 /** Solve every league present in the results, keyed `${league}:${teamId}`. */
 export function buildAllRatings(
   games: CompletedGame[],
   asOf: number,
+  /** Shrinkage multiplier, which the backtest measures. */
+  priorScale = 1,
 ): {
   ratings: Record<string, TeamRating>;
   byLeague: Partial<Record<League, RatingsResult>>;
@@ -272,7 +328,7 @@ export function buildAllRatings(
   for (const league of leagues) {
     const params = RATING_PARAMS[league];
     if (!params) continue;
-    const result = buildRatings(league, games, params, asOf);
+    const result = buildRatings(league, games, { ...params, priorScale }, asOf);
     byLeague[league] = result;
     for (const [teamId, rating] of Object.entries(result.teams)) {
       ratings[`${league}:${teamId}`] = rating;

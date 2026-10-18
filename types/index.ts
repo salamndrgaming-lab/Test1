@@ -409,6 +409,11 @@ export interface SgpRecommendation {
   /** Which inputs actually drove this slip, for an always-visible summary. */
   inputs: { label: string; detail: string }[];
   /**
+   * The model vote in force. Nonzero only when the backtest regression found
+   * statistically significant skill against the closing line.
+   */
+  modelVote: { weight: number; source: "measured" | "gated" };
+  /**
    * What the market survey actually supports. "value" means at least one leg
    * is priced better than the consensus fair value. "no-edge" means the
    * market looks efficient today and nothing qualifies. "single-book" means

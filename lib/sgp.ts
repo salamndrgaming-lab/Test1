@@ -49,7 +49,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "backtest-v13";
+export const MODEL_VERSION = "measured-v14";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -1015,6 +1015,12 @@ export function buildGameModel(
   injuries: Record<string, TeamInjuryReport> = {},
   ratings: Record<string, TeamRating> = {},
   weather: Record<string, GameWeather> = {},
+  /**
+   * The model vote, which the caller supplies from the backtest regression.
+   * Defaults to MEASURED_MODEL_SKILL — i.e. zero — so nothing votes unless
+   * measured evidence is handed in.
+   */
+  modelVote: number = MEASURED_MODEL_SKILL,
 ): GameModel | null {
   const lm = LEAGUE_MODEL[game.league];
   if (!lm) return null;
@@ -1293,11 +1299,10 @@ export function buildGameModel(
       ? (RATING_PARAMS[game.league]?.priorGames ?? lm.priorGames)
       : lm.priorGames;
   const shrink = sampleGames / (sampleGames + prior);
-  // MEASURED_MODEL_SKILL gates the whole vote. See its definition.
+  // The vote is gated by measured skill. See MEASURED_MODEL_SKILL.
+  const vote = clamp(modelVote, 0, 1);
   const modelWeight =
-    modelMargin === null
-      ? 0
-      : maxWeight * shrink * infoQuality * MEASURED_MODEL_SKILL;
+    modelMargin === null ? 0 : maxWeight * shrink * infoQuality * vote;
   const blendedMargin =
     modelMargin === null
       ? marketMargin
@@ -1308,7 +1313,7 @@ export function buildGameModel(
   const totalWeight =
     modelTotal === null || marketTotal === null
       ? 0
-      : MAX_TOTAL_WEIGHT * shrink * infoQuality * MEASURED_MODEL_SKILL;
+      : MAX_TOTAL_WEIGHT * shrink * infoQuality * vote;
   const blendedTotal =
     marketTotal === null
       ? modelTotal
@@ -1943,6 +1948,7 @@ export function legsFromGames(
   injuries: Record<string, TeamInjuryReport> = {},
   ratings: Record<string, TeamRating> = {},
   weather: Record<string, GameWeather> = {},
+  modelVote: number = MEASURED_MODEL_SKILL,
 ): SgpLeg[] {
   const oddsByGame = new Map(odds.map((o) => [o.gameId, o]));
   const legs: SgpLeg[] = [];
@@ -1951,7 +1957,9 @@ export function legsFromGames(
     if (g.status === "final") continue;
     const o = oddsByGame.get(g.id);
     if (!o) continue;
-    const gm = buildGameModel(g, o, scoring, schedule, injuries, ratings, weather);
+    const gm = buildGameModel(
+      g, o, scoring, schedule, injuries, ratings, weather, modelVote,
+    );
     if (!gm) continue;
 
     // Survey every book ESPN returned for this game. With one book this
@@ -2463,6 +2471,7 @@ export function buildRecommendation(
   minLegs = 6,
   cap = 10,
   maxPerGame = 1,
+  modelVote: number = MEASURED_MODEL_SKILL,
 ): SgpRecommendation {
   // Drop saturated legs before ranking. They would otherwise rank well — a
   // 99.9% probability against any price looks like enormous edge — while
@@ -2576,9 +2585,9 @@ export function buildRecommendation(
     {
       label: "Model vote",
       detail:
-        MEASURED_MODEL_SKILL === 0
-          ? "0% — pending measured skill"
-          : `${Math.round(MEASURED_MODEL_SKILL * 100)}% of cap`,
+        modelVote > 0
+          ? `${Math.round(modelVote * 100)}% — measured`
+          : "0% — no measured skill",
     },
     {
       label: "Books surveyed",
@@ -2626,9 +2635,9 @@ export function buildRecommendation(
   ];
 
   const notes: string[] = [
-    MEASURED_MODEL_SKILL === 0
+    modelVote === 0
       ? "Our own forecast currently votes ZERO on the published probability, and that is deliberate. Blending an independent view into a well-calibrated price only helps if the view carries information the price lacks; if it doesn't, the blend is the price plus noise, and adding noise to a calibrated probability strictly increases error — simulated at 2.5% of skill score at the weight this model used to carry, monotonically worse the more it votes. We have no measured evidence our deviation is skill (zero graded picks) and good reason to doubt it, since everything the model knows is public season data the market already has, along with lineups and injuries it doesn't. So the probability you see tracks the consensus; the projection is shown as context. The weight rises only when the prediction log measures skill against the closing line."
-      : `Our forecast votes ${Math.round(MEASURED_MODEL_SKILL * 100)}% of its cap, a weight set by measured skill against the closing line.`,
+      : `Our forecast votes ${Math.round(modelVote * 100)}% of its cap — a weight the backtest regression measured against the closing line, not one anybody chose. It rises and falls with the evidence.`,
     "What the model contributes instead is structural rather than predictive, and none of it depends on out-forecasting anyone: the shape of the outcome distribution, push probability on integer lines, exact same-game correlation, and a consensus across books that is a better estimate than any single book's price.",
     `Model ${MODEL_VERSION}: one projected margin and one projected total per game, from opponent-adjusted team ratings — an offense/defense pair solved from recent results so strength of schedule is divided out, with each game weighted by how recently it was played. Because the margin is net(home) − net(away) + home edge by construction, it is the same arithmetic the total uses, so the two markets can't contradict each other. Shrunk toward the de-vigged market by at most ${Math.round(MAX_MODEL_WEIGHT * 100)}% on the margin and ${Math.round(MAX_TOTAL_WEIGHT * 100)}% on the total; games with no results window fall back to unadjusted scoring rates (${Math.round(MAX_SCORING_WEIGHT * 100)}%), then the market alone. A win%-only prior is deliberately given no weight: it cannot separate two teams with the same record and opposite point differentials, it yields no totals opinion, and it fires exactly when we know least — so it only added motion, not signal.`,
     "The book's margin is removed with Shin's method rather than by proportional normalization. Books load more margin onto longshots, so splitting it evenly overstates a longshot's fair price and understates a heavy favourite's — which would read as free edge on exactly the short moneylines a parlay is built from.",
@@ -2711,6 +2720,10 @@ export function buildRecommendation(
     expectedValueIsTheoretical: correlated,
     modelVersion: MODEL_VERSION,
     inputs,
+    modelVote: {
+      weight: Number(clamp(modelVote, 0, 1).toFixed(3)),
+      source: modelVote > 0 ? "measured" : "gated",
+    },
     verdict,
     marketSurvey: {
       books: allBooks,

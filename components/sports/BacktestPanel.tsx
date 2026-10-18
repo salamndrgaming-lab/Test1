@@ -140,6 +140,109 @@ export function BacktestPanel() {
               )}
             </div>
 
+            {r.skillFit && (
+              <div className="mb-3 rounded-lg bg-[var(--surface-2)] p-2.5">
+                <p className="mb-1.5 text-[0.7rem] font-semibold text-[var(--text)]">
+                  Does the projection add anything the line doesn&apos;t?
+                </p>
+                <p className="mb-2 text-[0.65rem] leading-relaxed text-[var(--muted)]">
+                  Both are offered as explanations of what actually happened,
+                  and the data decides. A market that already contains
+                  everything we know gives our coefficient zero and the
+                  line&apos;s one.
+                </p>
+                <div className="grid grid-cols-2 gap-2 text-[0.7rem]">
+                  <div>
+                    <p className="text-[var(--muted-2)]">Our projection</p>
+                    <p className="mt-0.5 font-semibold tabular-nums">
+                      {r.skillFit.ourWeight.toFixed(3)}
+                      <span className="ml-1 font-normal text-[var(--muted-2)]">
+                        ± {r.skillFit.ourStandardError.toFixed(3)}
+                      </span>
+                    </p>
+                    <p
+                      className={classNames(
+                        "tabular-nums",
+                        r.skillFit.significant ? "text-good" : "text-[var(--muted-2)]",
+                      )}
+                    >
+                      t = {r.skillFit.ourT.toFixed(2)}{" "}
+                      {r.skillFit.significant ? "· significant" : "· not significant"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[var(--muted-2)]">Closing line</p>
+                    <p className="mt-0.5 font-semibold tabular-nums">
+                      {r.skillFit.marketWeight.toFixed(3)}
+                    </p>
+                    <p className="tabular-nums text-[var(--muted-2)]">
+                      t = {r.skillFit.marketT.toFixed(2)}
+                    </p>
+                  </div>
+                </div>
+                <p className="mt-2 text-[0.7rem] leading-relaxed">
+                  {r.skillFit.significant ? (
+                    <span className="text-good">
+                      Measured skill. This justifies a model vote of{" "}
+                      <span className="font-semibold">
+                        {(r.skillFit.justifiedVote * 100).toFixed(0)}%
+                      </span>
+                      , which the SGP tool now applies — a weight the data
+                      chose, not one anybody picked.
+                    </span>
+                  ) : (
+                    <span className="text-[var(--muted)]">
+                      No measured skill on this window, so the model vote stays
+                      at zero. That is the honest result and the reason the
+                      published probability tracks the consensus.
+                    </span>
+                  )}
+                </p>
+              </div>
+            )}
+
+            {(r.fitted.homeEdge != null || r.ratingSource) && (
+              <div className="mb-3 grid gap-2 text-[0.7rem] sm:grid-cols-2">
+                {r.fitted.homeEdge != null && (
+                  <div className="rounded-lg bg-[var(--surface-2)] p-2">
+                    <p className="text-[var(--muted-2)]">
+                      Home advantage, fitted
+                    </p>
+                    <p className="mt-0.5 font-semibold tabular-nums">
+                      {r.fitted.homeEdge.toFixed(2)} pts
+                    </p>
+                    <p className="text-[var(--muted-2)]">
+                      configured {r.fitted.configuredHomeEdge.toFixed(2)}
+                      {r.fitted.backToBack != null &&
+                        ` · back-to-back ${r.fitted.backToBack.toFixed(2)} vs ${r.fitted.configuredBackToBack.toFixed(2)}`}
+                    </p>
+                  </div>
+                )}
+                {r.ratingSource && (
+                  <div className="rounded-lg bg-[var(--surface-2)] p-2">
+                    <p className="text-[var(--muted-2)]">
+                      Ratings trained on…
+                    </p>
+                    <p className="mt-0.5 font-semibold tabular-nums">
+                      lines {r.ratingSource.fromLinesRmse.toFixed(2)} · scores{" "}
+                      {r.ratingSource.fromScoresRmse.toFixed(2)}
+                    </p>
+                    <p
+                      className={classNames(
+                        r.ratingSource.better === "lines"
+                          ? "text-good"
+                          : "text-[var(--muted-2)]",
+                      )}
+                    >
+                      {r.ratingSource.better === "tie"
+                        ? "no difference"
+                        : `${r.ratingSource.better} predict better (RMSE)`}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-[0.65rem] uppercase tracking-wide text-[var(--muted-2)]">

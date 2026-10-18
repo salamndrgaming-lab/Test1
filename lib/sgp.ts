@@ -49,7 +49,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "survey-v10";
+export const MODEL_VERSION = "track-v11";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -647,6 +647,44 @@ export const LEAGUE_MODEL: Record<League, LeagueModel> = {
 export const MAX_MODEL_WEIGHT = 0.35;
 
 /**
+ * How much of its own view the model is allowed to vote. Currently zero.
+ *
+ * This is the uncomfortable consequence of taking the rest of the file
+ * seriously. Blending an independent view into a well-calibrated forecast only
+ * helps if that view carries information the forecast lacks. If it does not,
+ * the blend is the forecast plus noise, and adding noise to a calibrated
+ * probability strictly increases squared error — monotonically in the weight.
+ * Simulated at our own cap: a 35% vote costs 2.5% of skill score against the
+ * market, 20% at a full vote, and 0% only at zero.
+ *
+ * So: does our deviation carry information the price lacks? We have no
+ * evidence that it does — zero graded picks — and good reason to doubt it.
+ * Everything the model knows is public season data: scoring rates, schedule,
+ * rest, travel, weather, park. The market knows all of it, and also knows
+ * lineups, injuries, and where the sharp money went. Our disagreement with it
+ * is therefore far more likely to be noise relative to its information set
+ * than signal.
+ *
+ * Voting 35% on that basis was an assertion dressed as a model. It is the same
+ * argument that zeroed the win%-only prior, applied where it actually bites.
+ *
+ * What the model still contributes, all of it structural rather than
+ * predictive, and none of it affected by this:
+ *
+ *  - the shape of the outcome distribution (Poisson differences, key numbers,
+ *    discrete support), which the posted price does not express;
+ *  - push probability on integer lines, which books sometimes misprice;
+ *  - exact same-game correlation, from parity and nested thresholds;
+ *  - the consensus itself, which is a better estimate than any single book.
+ *
+ * Raise this ONLY from the prediction log: if graded picks show positive skill
+ * against the closing line, the weight the data supports is roughly that
+ * measured skill. Not before, and never because the output looks more
+ * impressive with it turned up.
+ */
+export const MEASURED_MODEL_SKILL = 0;
+
+/**
  * Season points for/against, with no adjustment for who you played. Strictly
  * weaker than the opponent-adjusted ratings, so it votes less.
  */
@@ -683,6 +721,52 @@ export const MAX_TOTAL_WEIGHT = 0.3;
  * The count-model sports (hockey, baseball) get this for free, because a
  * Skellam's variance is the sum of its lambdas. This is for the rest.
  */
+/**
+ * Margin standard deviation implied by the market itself.
+ *
+ * The spread and the moneyline are two prices on the same distribution, and
+ * together they pin its width: if the market posts a 5.5-point spread and
+ * prices the favourite at 64.8%, then the sigma consistent with BOTH is
+ * 5.5 / Phi-inverse(0.648) = 14.5, not the 12.0 this model had been asserting.
+ * Assuming sigma instead of reading it left our own moneyline probability 3
+ * points away from the moneyline price, with the gap coming entirely from a
+ * constant I picked.
+ *
+ * This is the same move as every other improvement that measured well: replace
+ * an asserted parameter with one the data determines. Note that it does NOT
+ * make the model disagree with the market — it makes it agree with BOTH market
+ * signals at once, which assuming sigma could not do.
+ *
+ * Returns null when the inversion is ill-conditioned: near a pick'em the
+ * quantile is near zero and the ratio explodes, and a tiny spread carries no
+ * information about width.
+ */
+export function marketImpliedSigma(
+  league: League,
+  spreadMargin: number | null,
+  marketHomeWinProb: number,
+): number | null {
+  const lm = LEAGUE_MODEL[league];
+  if (!lm || spreadMargin == null) return null;
+  // Count sports price their margin off the moneyline already, so there is no
+  // independent second signal to combine.
+  if (!STANDARD_SPREAD_LEAGUES.has(league)) return null;
+
+  const p = marketHomeWinProb;
+  if (!(p > 0.05 && p < 0.95)) return null;
+  const z = normalQuantile(p);
+  // Near a coin flip both the quantile and the spread go to zero together and
+  // their ratio is pure noise.
+  if (Math.abs(z) < 0.12 || Math.abs(spreadMargin) < 0.5) return null;
+  // The two must at least agree on who is favoured.
+  if (Math.sign(z) !== Math.sign(spreadMargin)) return null;
+
+  const implied = Math.abs(spreadMargin) / Math.abs(z);
+  // A market-implied width wildly off the league norm is far more likely to be
+  // a mismatched spread-and-moneyline pair than a real distribution.
+  return clamp(implied, lm.marginSigma * 0.6, lm.marginSigma * 1.6);
+}
+
 export function effectiveSigma(league: League, total: number | null): number {
   const lm = LEAGUE_MODEL[league];
   if (!lm) return 1;
@@ -757,6 +841,8 @@ export interface GameModel {
   vig: number;
   /** Shin's estimated share of informed money behind that margin. */
   shinZ: number;
+  /** Margin SD implied jointly by the spread and the moneyline (null if unusable). */
+  impliedSigma: number | null;
   /** Spread-implied minus moneyline-implied margin (null without both). */
   marginDisagreement: number | null;
   /** True when the spread was rejected in favour of the moneyline. */
@@ -935,7 +1021,8 @@ export function buildGameModel(
   const { totalSigma } = lm;
 
   // Margin spread follows the scoring environment rather than a constant.
-  const sigma = effectiveSigma(
+  // Refined below once both market signals are known.
+  const scoringEnvironmentSigma = effectiveSigma(
     game.league,
     odds.total != null && Number.isFinite(odds.total) ? odds.total : null,
   );
@@ -968,6 +1055,19 @@ export function buildGameModel(
    * STANDARD_SPREAD_LEAGUES already encoded this distinction for pricing the
    * spread leg; it belongs here too.
    */
+  const impliedSigma = marketImpliedSigma(
+    game.league,
+    odds.spread != null && Number.isFinite(odds.spread)
+      ? -(odds.spread as number)
+      : null,
+    marketHomeWinProb,
+  );
+  /*
+   * Prefer the width the market's own two prices imply; fall back to the
+   * scoring-environment estimate when that inversion is ill-conditioned.
+   */
+  const sigma = impliedSigma ?? scoringEnvironmentSigma;
+
   const hasTrueSpread =
     odds.spread != null &&
     Number.isFinite(odds.spread) &&
@@ -1193,8 +1293,11 @@ export function buildGameModel(
       ? (RATING_PARAMS[game.league]?.priorGames ?? lm.priorGames)
       : lm.priorGames;
   const shrink = sampleGames / (sampleGames + prior);
+  // MEASURED_MODEL_SKILL gates the whole vote. See its definition.
   const modelWeight =
-    modelMargin === null ? 0 : maxWeight * shrink * infoQuality;
+    modelMargin === null
+      ? 0
+      : maxWeight * shrink * infoQuality * MEASURED_MODEL_SKILL;
   const blendedMargin =
     modelMargin === null
       ? marketMargin
@@ -1205,7 +1308,7 @@ export function buildGameModel(
   const totalWeight =
     modelTotal === null || marketTotal === null
       ? 0
-      : MAX_TOTAL_WEIGHT * shrink * infoQuality;
+      : MAX_TOTAL_WEIGHT * shrink * infoQuality * MEASURED_MODEL_SKILL;
   const blendedTotal =
     marketTotal === null
       ? modelTotal
@@ -1265,6 +1368,7 @@ export function buildGameModel(
     marketHomeWinProb,
     vig,
     shinZ,
+    impliedSigma: impliedSigma === null ? null : Number(impliedSigma.toFixed(2)),
     marginDisagreement:
       marginDisagreement === null
         ? null
@@ -1735,6 +1839,12 @@ function makeLeg(input: LegInput): SgpLeg {
         `${con.priceEdge >= 0 ? "+" : ""}${(con.priceEdge * 100).toFixed(1)}pp vs consensus fair ` +
         `(±${(con.standardError * 100).toFixed(1)}pp, ${con.edgeSignificance.toFixed(1)}σ` +
         `${con.edgeSignificance >= MIN_EDGE_SIGNIFICANCE ? "" : " — inside noise"})`,
+    });
+  }
+  if (input.gm.impliedSigma != null) {
+    stats.push({
+      label: "Spread σ",
+      value: `${input.gm.impliedSigma} ${LEAGUE_MODEL[input.game.league].unit}, read from the spread + moneyline together`,
     });
   }
   if (input.gm.spreadDistrusted) {
@@ -2464,6 +2574,13 @@ export function buildRecommendation(
     { label: "Line movement", detail: `${withMovement}/${legs.length} legs` },
     { label: "Back-to-backs", detail: withRest > 0 ? `${withRest} legs` : "none today" },
     {
+      label: "Model vote",
+      detail:
+        MEASURED_MODEL_SKILL === 0
+          ? "0% — pending measured skill"
+          : `${Math.round(MEASURED_MODEL_SKILL * 100)}% of cap`,
+    },
+    {
       label: "Books surveyed",
       detail: maxBooks > 1 ? `${maxBooks} — shopped` : "1 — no shopping",
     },
@@ -2509,10 +2626,14 @@ export function buildRecommendation(
   ];
 
   const notes: string[] = [
+    MEASURED_MODEL_SKILL === 0
+      ? "Our own forecast currently votes ZERO on the published probability, and that is deliberate. Blending an independent view into a well-calibrated price only helps if the view carries information the price lacks; if it doesn't, the blend is the price plus noise, and adding noise to a calibrated probability strictly increases error — simulated at 2.5% of skill score at the weight this model used to carry, monotonically worse the more it votes. We have no measured evidence our deviation is skill (zero graded picks) and good reason to doubt it, since everything the model knows is public season data the market already has, along with lineups and injuries it doesn't. So the probability you see tracks the consensus; the projection is shown as context. The weight rises only when the prediction log measures skill against the closing line."
+      : `Our forecast votes ${Math.round(MEASURED_MODEL_SKILL * 100)}% of its cap, a weight set by measured skill against the closing line.`,
+    "What the model contributes instead is structural rather than predictive, and none of it depends on out-forecasting anyone: the shape of the outcome distribution, push probability on integer lines, exact same-game correlation, and a consensus across books that is a better estimate than any single book's price.",
     `Model ${MODEL_VERSION}: one projected margin and one projected total per game, from opponent-adjusted team ratings — an offense/defense pair solved from recent results so strength of schedule is divided out, with each game weighted by how recently it was played. Because the margin is net(home) − net(away) + home edge by construction, it is the same arithmetic the total uses, so the two markets can't contradict each other. Shrunk toward the de-vigged market by at most ${Math.round(MAX_MODEL_WEIGHT * 100)}% on the margin and ${Math.round(MAX_TOTAL_WEIGHT * 100)}% on the total; games with no results window fall back to unadjusted scoring rates (${Math.round(MAX_SCORING_WEIGHT * 100)}%), then the market alone. A win%-only prior is deliberately given no weight: it cannot separate two teams with the same record and opposite point differentials, it yields no totals opinion, and it fires exactly when we know least — so it only added motion, not signal.`,
     "The book's margin is removed with Shin's method rather than by proportional normalization. Books load more margin onto longshots, so splitting it evenly overstates a longshot's fair price and understates a heavy favourite's — which would read as free edge on exactly the short moneylines a parlay is built from.",
     "Only true point spreads are read as the market's projected margin. A hockey puck line or baseball run line is fixed at ±1.5 and priced through its odds, so those games take their margin from the moneyline instead. The spread and the moneyline are also cross-checked against each other in probability space: when they disagree by more than 10 points about who wins, the spread is the signal more likely to have been misparsed, so the moneyline wins and the game is flagged.",
-    "Margin spread scales with the posted total rather than being a league constant: more scoring means more variance. The count-model sports get this automatically, since a Poisson difference takes its variance from the projected scores.",
+    "The margin's standard deviation is read from the market rather than assumed where possible: a posted spread and a moneyline are two prices on the same distribution and together they pin its width. A 5.5-point spread priced at 64.8% implies σ ≈ 14.5, not the 12.0 this model asserted — and assuming it left our own moneyline probability 3 points off the moneyline price. Reading it instead makes the model agree with both market signals at once. Where that inversion is ill-conditioned (near a pick'em) it falls back to scaling with the posted total: more scoring means more variance. The count-model sports get this automatically, since a Poisson difference takes its variance from the projected scores.",
     "Each game is modelled as a joint distribution over the two final scores, and every market is a marginal of that one object. This makes a same-game slip exact rather than approximate: a margin leg and a total leg are scored against outcomes that can actually occur together, including the parity constraint the old independent model violated (a total of 6 with a margin of 1 cannot happen).",
     "Baseball totals carry a park factor, because our scoring inputs are season aggregates across every park a team visited while the posted total is park-specific — Coors and Petco differ by nearly 20% in run environment, and without this our projection was systematically low in one and high in the other.",
     "The schedule model goes beyond back-to-backs: days of rest, three games in four nights, four in six, flight distance and time zones crossed since the last game, and long road trips. Only the asymmetry between the two sides counts, and the whole adjustment is capped.",

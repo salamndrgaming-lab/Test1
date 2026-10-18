@@ -13,11 +13,17 @@ const CONF_CLASS = {
 
 function ProbRow({ leg }: { leg: SgpLeg }) {
   const cells: [string, string, string][] = [
-    ["Model", formatPct(leg.modelProbability), "Our estimated true probability"],
     [
-      "Market",
+      "Model",
+      formatPct(leg.modelProbability),
+      "Our projection. Shown for transparency — it is NOT counted as expected value until the closing-line log measures whether it has any skill.",
+    ],
+    [
+      "Fair",
       formatPct(leg.marketProbability),
-      "The market price with the book's margin removed",
+      leg.booksSurveyed && leg.booksSurveyed > 1
+        ? `Consensus fair probability across ${leg.booksSurveyed} books, each de-vigged separately. This is the benchmark edge is measured against.`
+        : "This book's price with its margin removed. With one book there is nothing to shop against.",
     ],
     [
       "Break-even",
@@ -148,11 +154,20 @@ export function PickCard({
               ? "bg-green-500/10 text-green-300"
               : "bg-red-500/10 text-red-300",
           )}
-          title="Model probability minus the break-even probability at this price"
+          title="Consensus fair probability minus the break-even at the best available price. This is edge from the PRICE, not from our forecast."
         >
           edge {positive ? "+" : ""}
           {formatPct(leg.edge)}
         </span>
+        {leg.modelLean != null && Math.abs(leg.modelLean) >= 0.01 && (
+          <span
+            className="rounded bg-[var(--surface-2)] px-2 py-0.5 tabular-nums text-[var(--muted)]"
+            title="How far our projection differs from the consensus. Deliberately excluded from edge and expected value: we have no measured evidence it is skill yet."
+          >
+            model lean {leg.modelLean > 0 ? "+" : ""}
+            {formatPct(leg.modelLean)} · unproven
+          </span>
+        )}
         {movement && (
           <span
             className={classNames(

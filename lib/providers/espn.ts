@@ -1,4 +1,5 @@
 import type {
+  BookPrice,
   Game,
   League,
   LineMovement,
@@ -314,8 +315,40 @@ export async function fetchEspn(
       const webLink = ev.links?.find((l) => l.href?.includes("/game"))?.href;
       if (webLink) gameLinks[ev.id] = webLink;
 
-      const o = comp?.odds?.[0];
+      // ESPN returns an ARRAY of bookmakers. Reading only the first threw away
+      // the one thing that makes positive expected value measurable: the
+      // spread between what different books will pay for the same bet.
+      const allOdds = comp?.odds ?? [];
+      const o = allOdds[0];
       if (o) {
+        const books: BookPrice[] = [];
+        for (const q of allOdds) {
+          const qHomeMl = extractMoneyline(q.homeTeamOdds);
+          const qAwayMl = extractMoneyline(q.awayTeamOdds);
+          // Resolve each book's spread to the HOME side on its own terms.
+          const qDet = parseDetails(q.details);
+          let qSpread = q.spread;
+          if (qDet.abbr && qDet.line != null) {
+            const abs = Math.abs(qDet.line);
+            qSpread =
+              qDet.abbr === game.home.abbreviation
+                ? -abs
+                : qDet.abbr === game.away.abbreviation
+                  ? abs
+                  : q.spread;
+          }
+          books.push({
+            book: q.provider?.name ?? `book ${books.length + 1}`,
+            homeMoneyline: qHomeMl,
+            awayMoneyline: qAwayMl,
+            spread: qSpread,
+            spreadHomeOdds: q.homeTeamOdds?.spreadOdds,
+            spreadAwayOdds: q.awayTeamOdds?.spreadOdds,
+            total: q.overUnder,
+            overOdds: q.overOdds,
+            underOdds: q.underOdds,
+          });
+        }
         const homeMl = extractMoneyline(o.homeTeamOdds);
         const awayMl = extractMoneyline(o.awayTeamOdds);
         const homeAbbr = game.home.abbreviation;
@@ -354,6 +387,7 @@ export async function fetchEspn(
           favorite,
           details: o.details,
           movement: buildMovement(o, homeSpread, o.overUnder, homeMl, awayMl),
+          books,
         });
       }
     }

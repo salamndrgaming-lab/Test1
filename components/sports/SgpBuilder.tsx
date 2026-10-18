@@ -175,6 +175,59 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
         </p>
       </div>
 
+      {/* The honest headline: did the survey find a play, or not? */}
+      <div
+        className={classNames(
+          "card border-l-4",
+          rec.verdict === "value"
+            ? "border-l-green-400"
+            : "border-l-amber-400",
+        )}
+      >
+        <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="font-serif text-lg font-medium text-[var(--text)]">
+            {rec.verdict === "value"
+              ? `${rec.marketSurvey.valueLegs} price edge${rec.marketSurvey.valueLegs === 1 ? "" : "s"} found`
+              : rec.verdict === "no-edge"
+                ? "No edge on this slate"
+                : "One book only — no edge measurable"}
+          </h3>
+          <span className="text-[0.7rem] text-[var(--muted-2)]">
+            {rec.marketSurvey.books.length > 0
+              ? rec.marketSurvey.books.slice(0, 4).join(", ")
+              : "single price source"}
+          </span>
+        </div>
+        <p className="text-xs leading-relaxed text-[var(--muted)]">
+          {rec.verdict === "value" ? (
+            <>
+              The best available price beats the consensus fair value by up to{" "}
+              <span className="font-semibold text-good">
+                {(rec.marketSurvey.bestPriceEdge * 100).toFixed(1)} points
+              </span>
+              . That edge is in the price, not the forecast — the same bet at a
+              number one book has moved and others haven&apos;t. It decays as
+              they catch up.
+            </>
+          ) : rec.verdict === "no-edge" ? (
+            <>
+              Every surveyed book is pricing these games at or inside the
+              consensus fair value, so nothing below is a play — it&apos;s the
+              least-bad set. An efficient market producing no edge is the
+              expected result, not a fault.
+            </>
+          ) : (
+            <>
+              Only one price source was available, so there was nothing to shop
+              against. Expected value is negative by construction here: you
+              pay the book&apos;s hold (~
+              {(rec.marketSurvey.meanVig * 100).toFixed(1)}%) with no better
+              number to compare it to.
+            </>
+          )}
+        </p>
+      </div>
+
       <div className="card">
         <div className="mb-2 flex flex-wrap items-baseline gap-x-2">
           <h3 className="font-semibold">Model inputs</h3>

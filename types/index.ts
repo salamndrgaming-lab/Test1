@@ -100,6 +100,19 @@ export interface Game {
   venue?: string;
 }
 
+/** One bookmaker's prices on one game. */
+export interface BookPrice {
+  book: string;
+  homeMoneyline?: number;
+  awayMoneyline?: number;
+  spread?: number;
+  spreadHomeOdds?: number;
+  spreadAwayOdds?: number;
+  total?: number;
+  overOdds?: number;
+  underOdds?: number;
+}
+
 export interface MarketOdds {
   gameId: string;
   book: string;
@@ -116,6 +129,12 @@ export interface MarketOdds {
   details?: string; // raw "NYY -1.5"
   /** How the price has moved since it opened. */
   movement?: LineMovement;
+  /**
+   * Every bookmaker ESPN returned for this game. Edge is measured as the gap
+   * between the consensus fair price across these and the best one available,
+   * which is the only honest source of positive expected value on free data.
+   */
+  books?: BookPrice[];
 }
 
 /**
@@ -302,8 +321,18 @@ export interface SgpLeg {
   breakEvenProbability: number;
   /** Odds that would be fair at our model probability. */
   fairAmericanOdds: number;
-  /** modelProbability - breakEvenProbability. Positive = +EV. */
+  /**
+   * Consensus fair probability minus the break-even at the best available
+   * price. Positive means the price is better than the bet is worth. This is
+   * deliberately NOT our model's disagreement with the market — see makeLeg.
+   */
   edge: number;
+  /**
+   * How far our forecast differs from the consensus. Reported for
+   * transparency and explicitly NOT counted as expected value: we have no
+   * measured evidence it is skill until the closing-line log says so.
+   */
+  modelLean?: number;
   /** Expected profit per $1 staked. */
   expectedValue: number;
   /** Kelly stake fraction (0 when there's no edge). */
@@ -321,6 +350,19 @@ export interface SgpLeg {
    * rather than an estimate. These are excluded from the slip.
    */
   saturated?: boolean;
+
+  /** Which book offers the price quoted above. */
+  bestBook?: string;
+  /** How many books were surveyed for this market. 1 = no shopping possible. */
+  booksSurveyed?: number;
+  /**
+   * Consensus fair probability minus the break-even at the best available
+   * price. This is edge that comes from the price rather than from the model,
+   * and it is the only kind reliably available on free data.
+   */
+  priceEdge?: number;
+  /** Probability spread between the best and worst book on this side. */
+  priceDispersion?: number;
 }
 
 export interface SgpRecommendation {
@@ -349,6 +391,24 @@ export interface SgpRecommendation {
   modelVersion: string;
   /** Which inputs actually drove this slip, for an always-visible summary. */
   inputs: { label: string; detail: string }[];
+  /**
+   * What the market survey actually supports. "value" means at least one leg
+   * is priced better than the consensus fair value. "no-edge" means the
+   * market looks efficient today and nothing qualifies. "single-book" means
+   * only one price source was available, so no line shopping was possible and
+   * every leg structurally carries that book's hold.
+   */
+  verdict: "value" | "no-edge" | "single-book";
+  marketSurvey: {
+    /** Distinct bookmakers seen across the slate. */
+    books: string[];
+    /** Legs whose best available price beats consensus fair value. */
+    valueLegs: number;
+    /** Mean book hold across surveyed markets. */
+    meanVig: number;
+    /** Best price edge found, in probability points. */
+    bestPriceEdge: number;
+  };
   /** Plain-language notes about the model and its caveats. */
   notes: string[];
   disclaimer: string;

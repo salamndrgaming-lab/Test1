@@ -18,6 +18,10 @@ import type {
 import { formatOdds } from "@/lib/format";
 import { RATING_PARAMS } from "@/lib/ratings";
 import {
+  buildGameConsensus,
+  type ConsensusSide,
+} from "@/lib/market";
+import {
   distanceKm,
   parkFactor,
   teamCity,
@@ -44,7 +48,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "sched-v7.1";
+export const MODEL_VERSION = "market-v8";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -1476,6 +1480,48 @@ export function computeConfidence(opts: {
  * 7. Leg construction
  * ------------------------------------------------------------------ */
 
+/**
+ * Which side of a two-way market is the better buy.
+ *
+ * Judged on the price against the consensus fair value, not on our model's
+ * preference — otherwise the tool picks whichever side our unvalidated
+ * disagreement happens to favour and then reports that choice as value.
+ */
+function sideValue(side: {
+  american: number;
+  /** De-vigged fallback when the market wasn't quoted by several books. */
+  market?: number;
+  con?: ConsensusSide;
+}): number {
+  const benchmark = side.con?.fairProbability ?? side.market ?? 0.5;
+  return benchmark - impliedProbability(americanToDecimal(side.american));
+}
+
+/**
+ * Price value is barely distinguishable between the two sides of a market —
+ * at a symmetrical -110/-110 they are identical.
+ */
+const SIDE_VALUE_TIE = 0.002;
+
+/**
+ * Choose between the two sides of a market.
+ *
+ * Price value decides it, because that is the part we can defend. But when
+ * the two prices are effectively symmetrical there is no price signal at all,
+ * and picking whichever side the array happened to list first would be worse
+ * than useless. In that case the model's lean breaks the tie — which costs
+ * nothing, since expected value is still computed from the price alone.
+ */
+function pickSide<
+  T extends { american: number; market?: number; model: number; con?: ConsensusSide },
+>(sides: T[]): T {
+  return sides.reduce((a, b) => {
+    const diff = sideValue(b) - sideValue(a);
+    if (Math.abs(diff) > SIDE_VALUE_TIE) return diff > 0 ? b : a;
+    return b.model > a.model ? b : a;
+  });
+}
+
 /** Everything needed to compute exact same-game correlation later. */
 export type LegModelMeta = SgpLegModelMeta;
 
@@ -1489,6 +1535,8 @@ interface LegInput {
   modelProb: number;
   marketProb: number;
   isModelled: boolean;
+  /** Consensus across books for this exact side, when it was quoted. */
+  consensus?: ConsensusSide;
   rationale: string;
   stats: { label: string; value: string }[];
   reference: { label: string; url: string };
@@ -1496,9 +1544,51 @@ interface LegInput {
 }
 
 function makeLeg(input: LegInput): SgpLeg {
-  const decimal = americanToDecimal(input.americanOdds);
+  /*
+   * Price the leg at the BEST number any surveyed book offers, and measure
+   * edge against the consensus fair probability across all of them.
+   *
+   * This is the difference between a tool that reports a structural loss and
+   * one that can find a real play. Against a single book you are comparing a
+   * shrunken projection to that book's own de-vigged price and then paying its
+   * hold, so the answer is always slightly negative and correctly so. Across
+   * several books, the same bet is sometimes available at a number that is
+   * better than the consensus fair value — and that gap is edge that owes
+   * nothing to forecasting skill.
+   */
+  const con = input.consensus;
+  const americanOdds = con?.bestAmerican ?? input.americanOdds;
+  const decimal = americanToDecimal(americanOdds);
   const rawImplied = impliedProbability(decimal);
-  const edge = input.modelProb - rawImplied;
+  // The benchmark is the consensus where we have one, the single book's
+  // de-vigged price otherwise.
+  const benchmark = con?.fairProbability ?? input.marketProb;
+  /*
+   * Edge is measured against the CONSENSUS FAIR PRICE, not against our own
+   * probability. This is the most important line in the file.
+   *
+   * Measuring `modelProbability - breakEven` counts our model's disagreement
+   * with the market as profit. On three books quoting identical prices — a
+   * market where there is objectively nothing to win — that produced a
+   * claimed +16.6pp edge and +0.32 expected value per dollar, every cent of
+   * it from the model differing from the market by 19 points. We have no
+   * evidence that disagreement is skill: zero graded picks, and the whole
+   * reason CLV tracking exists is that it is the thing still to be measured.
+   * Presenting it as expected value is inventing a number.
+   *
+   * So edge, expected value and Kelly all come from the price: the gap
+   * between what the consensus says the bet is worth and what the best book
+   * will pay for it. That number owes nothing to forecasting skill, which is
+   * exactly why it can be trusted today. The model's lean is reported
+   * separately and labelled unproven.
+   *
+   * When the prediction log shows measured skill against the closing line,
+   * the model's view can be blended back in at a weight the data supports.
+   * Not before.
+   */
+  const edge = benchmark - rawImplied;
+  /** Our forecast's disagreement with the consensus. Unvalidated. */
+  const modelLean = input.modelProb - benchmark;
   const movement = readMovement(input.gm, input.meta);
   const conf = computeConfidence({
     sampleGames: input.gm.sampleGames,
@@ -1508,7 +1598,7 @@ function makeLeg(input: LegInput): SgpLeg {
            LEAGUE_MODEL[input.game.league].priorGames)
         : LEAGUE_MODEL[input.game.league].priorGames,
     modelProb: input.modelProb,
-    marketProb: input.marketProb,
+    marketProb: benchmark,
     vig: input.gm.vig,
     isModelled: input.isModelled,
     movement,
@@ -1535,6 +1625,20 @@ function makeLeg(input: LegInput): SgpLeg {
     stats.push({
       label: "Push",
       value: `${(push * 100).toFixed(1)}% (stake returned)`,
+    });
+  }
+  if (con && con.books > 1) {
+    stats.push({
+      label: "Best of",
+      value: `${con.books} books — ${con.bestBook} at ${formatOdds(con.bestAmerican)}${
+        con.priceDispersion > 0.005
+          ? ` (${(con.priceDispersion * 100).toFixed(1)}pp spread)`
+          : ""
+      }`,
+    });
+    stats.push({
+      label: "Price edge",
+      value: `${con.priceEdge >= 0 ? "+" : ""}${(con.priceEdge * 100).toFixed(1)}pp vs consensus fair`,
     });
   }
   if (input.gm.spreadDistrusted) {
@@ -1576,6 +1680,7 @@ function makeLeg(input: LegInput): SgpLeg {
     });
   }
 
+  const priceEdge = con ? con.priceEdge : null;
   const saturated =
     input.modelProb >= SATURATION_CEILING ||
     input.modelProb <= 1 - SATURATION_CEILING;
@@ -1584,18 +1689,23 @@ function makeLeg(input: LegInput): SgpLeg {
     id: input.id,
     gameId: input.game.id,
     saturated,
+    bestBook: con?.bestBook,
+    booksSurveyed: con?.books ?? 1,
+    priceEdge: priceEdge === null ? undefined : priceEdge,
+    priceDispersion: con?.priceDispersion,
     league: input.game.league,
     matchup: `${input.game.away.abbreviation} @ ${input.game.home.abbreviation}`,
     market: input.market,
     selection: input.selection,
-    americanOdds: input.americanOdds,
+    americanOdds,
     modelProbability: Number(input.modelProb.toFixed(4)),
-    marketProbability: Number(input.marketProb.toFixed(4)),
+    marketProbability: Number(benchmark.toFixed(4)),
     breakEvenProbability: Number(rawImplied.toFixed(4)),
     fairAmericanOdds: fairAmericanOdds(input.modelProb),
     edge: Number(edge.toFixed(4)),
-    expectedValue: Number(expectedValue(input.modelProb, decimal).toFixed(4)),
-    kellyFraction: Number(kellyFraction(input.modelProb, decimal).toFixed(4)),
+    expectedValue: Number(expectedValue(benchmark, decimal).toFixed(4)),
+    kellyFraction: Number(kellyFraction(benchmark, decimal).toFixed(4)),
+    modelLean: Number(modelLean.toFixed(4)),
     confidence: conf.level,
     confidenceScore: conf.score,
     confidenceFactors: conf.factors,
@@ -1634,6 +1744,26 @@ export function legsFromGames(
     const gm = buildGameModel(g, o, scoring, schedule, injuries, ratings, weather);
     if (!gm) continue;
 
+    // Survey every book ESPN returned for this game. With one book this
+    // degrades to that book's own de-vigged price, and the UI says so.
+    const consensus = buildGameConsensus(
+      o.books && o.books.length > 0
+        ? o.books
+        : [
+            {
+              book: o.book,
+              homeMoneyline: o.homeMoneyline,
+              awayMoneyline: o.awayMoneyline,
+              spread: o.spread,
+              spreadHomeOdds: o.spreadHomeOdds,
+              spreadAwayOdds: o.spreadAwayOdds,
+              total: o.total,
+              overOdds: o.overOdds,
+              underOdds: o.underOdds,
+            },
+          ],
+    );
+
     const lm = LEAGUE_MODEL[g.league];
     const ref = gameLinks[g.id]
       ? { label: "ESPN — Game preview & odds", url: gameLinks[g.id] }
@@ -1667,25 +1797,23 @@ export function legsFromGames(
           team: g.home,
           opp: g.away,
           isHome: true,
-          american: o.homeMoneyline,
+          american: consensus.moneyline.home?.bestAmerican ?? o.homeMoneyline,
           model: pHome,
-          market: gm.marketHomeWinProb,
+          market: consensus.moneyline.home?.fairProbability ?? gm.marketHomeWinProb,
+          con: consensus.moneyline.home,
         },
         {
           team: g.away,
           opp: g.home,
           isHome: false,
-          american: o.awayMoneyline,
+          american: consensus.moneyline.away?.bestAmerican ?? o.awayMoneyline,
           model: 1 - pHome,
-          market: 1 - gm.marketHomeWinProb,
+          market: consensus.moneyline.away?.fairProbability ?? 1 - gm.marketHomeWinProb,
+          con: consensus.moneyline.away,
         },
       ];
-      const best = sides.reduce((a, b) =>
-        b.model - impliedProbability(americanToDecimal(b.american)) >
-        a.model - impliedProbability(americanToDecimal(a.american))
-          ? b
-          : a,
-      );
+      // Price value decides; the model only breaks a tie. See pickSide.
+      const best = pickSide(sides);
       legs.push(
         makeLeg({
           id: `${g.id}-ml`,
@@ -1696,6 +1824,7 @@ export function legsFromGames(
           americanOdds: best.american,
           modelProb: best.model,
           marketProb: best.market,
+          consensus: best.con,
           isModelled: true,
           rationale:
             `Model projects ${marginStat.value}. That puts ${best.team.name} at ` +
@@ -1747,25 +1876,23 @@ export function legsFromGames(
           team: g.home,
           isHome: true,
           line: homeLine,
-          american: priceHome,
+          american: consensus.spread.home?.bestAmerican ?? priceHome,
           model: pHomeCover,
           threshold: -homeLine,
+          con: consensus.spread.home,
         },
         {
           team: g.away,
           isHome: false,
           line: -homeLine,
-          american: priceAway,
+          american: consensus.spread.away?.bestAmerican ?? priceAway,
           model: 1 - pHomeCover,
           threshold: homeLine,
+          con: consensus.spread.away,
         },
       ];
-      const best = sides.reduce((a, b) =>
-        b.model - impliedProbability(americanToDecimal(b.american)) >
-        a.model - impliedProbability(americanToDecimal(a.american))
-          ? b
-          : a,
-      );
+      // Price value decides; the model only breaks a tie. See pickSide.
+      const best = pickSide(sides);
       const lineStr = `${best.line > 0 ? "+" : ""}${best.line}`;
       // de-vigged market view of a spread is ~50/50 by construction
       const rawPair = removeVig([
@@ -1783,7 +1910,8 @@ export function legsFromGames(
           selection: `${best.team.name} ${lineStr}`,
           americanOdds: best.american,
           modelProb: best.model,
-          marketProb,
+          marketProb: best.con?.fairProbability ?? marketProb,
+          consensus: best.con,
           isModelled: true,
           rationale:
             `The market line implies a ${Math.abs(gm.marketMargin).toFixed(1)}-${lm.unit} margin; ` +
@@ -1832,26 +1960,24 @@ export function legsFromGames(
         {
           side: "over" as const,
           selection: `Over ${line}`,
-          american: priceOver,
+          american: consensus.total.home?.bestAmerican ?? priceOver,
           model: pOver,
-          market: dv.fair[0],
+          market: consensus.total.home?.fairProbability ?? dv.fair[0],
+          con: consensus.total.home,
         },
         {
           side: "under" as const,
           selection: `Under ${line}`,
-          american: priceUnder,
+          american: consensus.total.away?.bestAmerican ?? priceUnder,
           model: 1 - pOver,
-          market: dv.fair[1],
+          market: consensus.total.away?.fairProbability ?? dv.fair[1],
+          con: consensus.total.away,
         },
       ];
       // With no scoring data both sides are market-priced, so this reduces to
       // the over — which is exactly the old, honestly-neutral behaviour.
-      const best = sides.reduce((a, b) =>
-        b.model - impliedProbability(americanToDecimal(b.american)) >
-        a.model - impliedProbability(americanToDecimal(a.american))
-          ? b
-          : a,
-      );
+      // Price value decides; the model only breaks a tie. See pickSide.
+      const best = pickSide(sides);
 
       const sc = gm.scoring;
       legs.push(
@@ -1864,6 +1990,7 @@ export function legsFromGames(
           americanOdds: best.american,
           modelProb: best.model,
           marketProb: best.market,
+          consensus: best.con,
           isModelled: modelled,
           rationale: modelled
             ? `Scoring rates project ${gm.scoring?.projHome.toFixed(1)} for ${g.home.abbreviation} and ` +
@@ -2066,11 +2193,14 @@ export function calculatePayout(
   };
 }
 
-/** Edge of a single leg: model probability minus the break-even price. */
+/**
+ * Edge of a single leg: the consensus fair probability minus the break-even
+ * at the best available price. Price-based on purpose — see makeLeg.
+ */
 export function legEdge(leg: SgpLeg): number {
   if (typeof leg.edge === "number") return leg.edge;
   const implied = impliedProbability(americanToDecimal(leg.americanOdds));
-  return Number((leg.modelProbability - implied).toFixed(4));
+  return Number((leg.marketProbability - implied).toFixed(4));
 }
 
 /** Rank score: edge, discounted by how much we trust the estimate. */
@@ -2122,6 +2252,34 @@ export function buildRecommendation(
     legs.push(leg);
   }
 
+  /*
+   * What does the survey actually support?
+   *
+   * The tool has to be able to come back with nothing. Ranking six
+   * negative-expectation legs "least-bad first" and presenting them as picks
+   * is the kind of output that looks like analysis and isn't — the honest
+   * answer on an efficient market is that there is no play.
+   */
+  const allBooks = [
+    ...new Set(
+      candidates.flatMap((l) => (l.bestBook ? [l.bestBook] : [])),
+    ),
+  ];
+  const maxBooks = Math.max(1, ...candidates.map((l) => l.booksSurveyed ?? 1));
+  const priceEdges = candidates
+    .map((l) => l.priceEdge)
+    .filter((e): e is number => e != null);
+  const bestPriceEdge = priceEdges.length > 0 ? Math.max(...priceEdges) : 0;
+  const valueLegs = usable.filter((l) => legEdge(l) > 0).length;
+  const meanVigRaw =
+    candidates.length > 0
+      ? candidates.reduce((acc, l) => acc + (l.breakEvenProbability - l.marketProbability), 0) /
+        candidates.length
+      : 0;
+
+  const verdict: SgpRecommendation["verdict"] =
+    valueLegs > 0 ? "value" : maxBooks > 1 ? "no-edge" : "single-book";
+
   const combinedDecimalOdds = combineLegs(legs);
   const adjusted = jointProbability(legs);
   const naive = legs.reduce((acc, l) => acc * l.modelProbability, 1);
@@ -2166,8 +2324,12 @@ export function buildRecommendation(
     { label: "Line movement", detail: `${withMovement}/${legs.length} legs` },
     { label: "Back-to-backs", detail: withRest > 0 ? `${withRest} legs` : "none today" },
     {
-      label: "Market de-vigged",
-      detail: `${legs.length}/${legs.length} legs`,
+      label: "Books surveyed",
+      detail: maxBooks > 1 ? `${maxBooks} — shopped` : "1 — no shopping",
+    },
+    {
+      label: "Value legs",
+      detail: valueLegs > 0 ? `${valueLegs} beat consensus` : "none today",
     },
     {
       label: "Distribution",
@@ -2212,10 +2374,24 @@ export function buildRecommendation(
     "Outdoor NFL and MLB games carry a forecast adjustment to the projected total — wind, cold and rain suppress football scoring; heat raises baseball scoring. Baseball wind is deliberately NOT applied, because its effect depends on which way the stadium faces and we don't have that, so it is recorded as a known unknown instead of guessed.",
     `Each sport is priced on its own distribution${families.length ? ` (${families.join(", ")})` : ""}, not a single normal curve: hockey and baseball margins are a difference of two Poissons, football margins are reweighted toward the key numbers 3 and 7, and basketball uses a discretized normal. Every distribution is discrete, so a line that can be landed on exactly carries real push mass and the published probability is conditional on not pushing.`,
     "Injuries are detected but never quantified. We can't tell a starter from a third-stringer from this feed, so a team with players out reduces how much the model's own view counts rather than moving the projection — the model defers to the market precisely where it is least informed.",
-    "Probabilities are compared against de-vigged market prices, so the book's margin is never counted as edge.",
+    "Edge, expected value and Kelly are measured from the PRICE: the gap between the consensus fair value across the surveyed books and the break-even at the best number any of them offers. Our own projection is reported but deliberately excluded from those figures, because we have no measured evidence yet that its disagreement with the market is skill rather than noise — that is what the closing-line log exists to find out. Counting it would have claimed +16.6pp of edge on a market where three books quoted identical prices and there was nothing to win.",
+    "An outlier price sets the best price but never the benchmark. A book quoting a two-way market below 100% is arbitraging itself, which in practice means one of its numbers is stale — the least reliable estimate of the truth even when it is the best thing to bet into.",
     "Line movement since the market opened is reported and folded into confidence, but never into the probability: the current price already contains it, so adding it again would double-count the same information.",
     "Back-to-backs are read from the last two days of results and applied inside our projection (NBA/NCAAB ~1.5-1.8 pts, NHL ~0.2 goals), so a rested team is never credited twice.",
   ];
+  if (verdict === "single-book") {
+    notes.push(
+      `Only one bookmaker was available for these games, so no line shopping was possible. Against a single book you are comparing our projection to that book's own de-vigged price and then paying its hold — roughly ${(Math.max(0, meanVigRaw) * 100).toFixed(1)}% here — so every leg is negative expectation by construction. That is the correct answer, not a model failure: these are the least-bad options, not plays. Real edge on free data comes from paying a better price than the consensus, which needs more than one price.`,
+    );
+  } else if (verdict === "no-edge") {
+    notes.push(
+      `${maxBooks} bookmakers were surveyed and none is offering a price better than the consensus fair value on any leg. The market looks efficient on this slate, so the honest output is that there is no play — the slip below is the least-bad set, not a recommendation. The best price gap found was ${(bestPriceEdge * 100).toFixed(1)} points, which does not cover the hold.`,
+    );
+  } else {
+    notes.push(
+      `${valueLegs} of ${usable.length} legs are available at a price better than the consensus fair value across ${maxBooks} books — a gap of up to ${(bestPriceEdge * 100).toFixed(1)} probability points. That edge comes from the PRICE, not from the projection: it is the same bet, at a number one book has moved and the others have not. It is also perishable, since those books move too.`,
+    );
+  }
   if (excluded.length > 0) {
     notes.push(
       `${excluded.length} leg${excluded.length === 1 ? "" : "s"} were left out for being near-certainties (${excluded.map((l) => l.selection).slice(0, 3).join(", ")}${excluded.length > 3 ? ", …" : ""}). At those probabilities the published figure is a clamp rather than an estimate, the expected-value and Kelly numbers derived from it are meaningless, and the market prices the same near-certainty — so there is nothing there to act on.`,
@@ -2263,6 +2439,13 @@ export function buildRecommendation(
     expectedValueIsTheoretical: correlated,
     modelVersion: MODEL_VERSION,
     inputs,
+    verdict,
+    marketSurvey: {
+      books: allBooks,
+      valueLegs,
+      meanVig: Number(Math.max(0, meanVigRaw).toFixed(4)),
+      bestPriceEdge: Number(bestPriceEdge.toFixed(4)),
+    },
     notes,
     disclaimer: SGP_DISCLAIMER,
   };

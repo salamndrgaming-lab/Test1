@@ -304,6 +304,37 @@ export interface SgpLegModelMeta {
   pushProbability?: number;
 }
 
+/** How seriously a warning should be taken. */
+export type RiskSeverity = "high" | "medium" | "low";
+
+/**
+ * A concrete, measured reason to distrust a leg.
+ *
+ * Deliberately not a vibe or a composite "grade": each flag names a condition
+ * that was actually observed in the data, so it can be checked and argued
+ * with rather than taken on faith.
+ */
+export interface RiskFlag {
+  severity: RiskSeverity;
+  /** Short label for a chip. */
+  label: string;
+  /** The specific fact that raised it. */
+  detail: string;
+}
+
+/**
+ * Why this leg, separated into the three things a case is made of: what is
+ * true, what follows from it, and how certain the numbers are.
+ */
+export interface Justification {
+  /** Observable inputs — ratings, records, schedule, weather, pitchers. */
+  facts: string[];
+  /** The reasoning that selects this side at this price. */
+  logic: string;
+  /** The quantified part, with sample sizes and errors attached. */
+  statistics: string[];
+}
+
 export interface SgpLeg {
   id: string;
   gameId: string;
@@ -366,6 +397,10 @@ export interface SgpLeg {
   priceEdge?: number;
   /** Probability spread between the best and worst book on this side. */
   priceDispersion?: number;
+  /** Measured reasons to distrust this leg. Empty is a clean leg. */
+  riskFlags?: RiskFlag[];
+  /** Structured case for the leg: facts, logic, statistics. */
+  justification?: Justification;
   /** Standard error of the consensus fair probability, from book dispersion. */
   fairStandardError?: number;
   /**
@@ -379,7 +414,12 @@ export interface SgpLeg {
 export interface SgpRecommendation {
   id: string;
   title: string;
-  legs: SgpLeg[]; // 6+
+  legs: SgpLeg[];
+  /**
+   * Every usable leg, ranked. The slip is built from these, so the user can
+   * choose any length without another request.
+   */
+  candidates: SgpLeg[];
   combinedDecimalOdds: number;
   combinedAmericanOdds: number;
   /** Break-even probability implied by the combined price. */

@@ -4,8 +4,10 @@ import type {
   GameWeather,
   League,
   LineMovement,
+  Justification,
   MarketOdds,
   ProbablePitcher,
+  RiskFlag,
   TeamInjuryReport,
   TeamRating,
   TeamSchedule,
@@ -49,7 +51,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "measured-v14";
+export const MODEL_VERSION = "slip-v15";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -1746,6 +1748,214 @@ interface LegInput {
   meta: LegModelMeta;
 }
 
+/**
+ * Measured reasons to distrust a leg.
+ *
+ * Every flag names a condition observed in the data rather than a feeling
+ * about the pick, so each one can be checked. A leg with no flags is not a
+ * good bet — it is a bet with no known problems, which is a different and
+ * weaker claim.
+ */
+function buildRiskFlags(
+  gm: GameModel,
+  con: ConsensusSide | undefined,
+  meta: LegModelMeta,
+  edge: number,
+  isModelled: boolean,
+  movement: MovementRead | null,
+): RiskFlag[] {
+  const flags: RiskFlag[] = [];
+
+  // --- the price, which is where value actually comes from ---
+  if (!con || con.books < 2) {
+    flags.push({
+      severity: "high",
+      label: "Unverified price",
+      detail:
+        "Only one bookmaker quoted this market, so fair value is that book's own de-vigged price. Edge against it is circular and comes out at minus half its hold by arithmetic.",
+    });
+  } else if (edge <= 0) {
+    flags.push({
+      severity: "high",
+      label: "No price edge",
+      detail: `The best available price is ${Math.abs(edge * 100).toFixed(1)} points worse than the consensus fair value. This leg costs money in expectation; it is not a play.`,
+    });
+  } else if ((con.edgeSignificance ?? 0) < MIN_EDGE_SIGNIFICANCE) {
+    flags.push({
+      severity: "high",
+      label: "Edge inside noise",
+      detail: `The +${(edge * 100).toFixed(1)}pp gap is only ${con.edgeSignificance.toFixed(1)} standard errors from zero, against a ±${(con.standardError * 100).toFixed(1)}pp error on fair value. The books disagree with each other by more than this apparent edge.`,
+    });
+  }
+
+  if (con && con.books >= 2 && con.standardError > 0.02) {
+    flags.push({
+      severity: "medium",
+      label: "Books disagree",
+      detail: `The ${con.books} books surveyed spread over ±${(con.standardError * 100).toFixed(1)}pp on fair value, so the benchmark itself is imprecise.`,
+    });
+  }
+
+  // --- the bet's own mechanics ---
+  const push = meta.pushProbability ?? 0;
+  if (push > 0.05) {
+    flags.push({
+      severity: "medium",
+      label: `${(push * 100).toFixed(0)}% push`,
+      detail: `This line can be landed on exactly, which returns the stake. The quoted probability is conditional on that not happening.`,
+    });
+  }
+
+  if (!isModelled) {
+    flags.push({
+      severity: "low",
+      label: "No model view",
+      detail:
+        "We have no directional opinion on this market — it is priced at the consensus. Any value here is in the price alone.",
+    });
+  }
+
+  // --- what we know we don't know ---
+  if (gm.infoQuality < 0.8) {
+    flags.push({
+      severity: gm.infoQuality < 0.6 ? "high" : "medium",
+      label: `${Math.round(gm.infoQuality * 100)}% information`,
+      detail:
+        gm.blindSpots.length > 0
+          ? gm.blindSpots.join("; ")
+          : "Inputs for this game are incomplete.",
+    });
+  }
+
+  if (gm.spreadDistrusted) {
+    flags.push({
+      severity: "high",
+      label: "Market signals conflict",
+      detail: `The posted spread and the moneyline disagree by ${Math.abs(gm.marginDisagreement ?? 0).toFixed(1)} ${LEAGUE_MODEL[gm.league].unit} about who wins. One of them is likely misreported, so we deferred to the moneyline.`,
+    });
+  }
+
+  if (gm.marginClamped) {
+    flags.push({
+      severity: "medium",
+      label: "Projection clamped",
+      detail:
+        "Our raw projection implied a margin impossible against this total, so it was pulled back to a possible value.",
+    });
+  }
+
+  if (movement && movement.agreement < -0.15) {
+    flags.push({
+      severity: "medium",
+      label: "Line moving away",
+      detail: `Since this market opened the price has moved against this side (${movement.label}). Sharp money disagrees with it.`,
+    });
+  }
+
+  if (gm.marginBasis === "record" || gm.marginBasis === "market") {
+    flags.push({
+      severity: "low",
+      label: "No scoring data",
+      detail:
+        "We have no points-for/against or ratings for these teams in the window, so the projection is the market's with no independent input.",
+    });
+  }
+
+  return flags;
+}
+
+/** The case for a leg: what is true, what follows, and how certain. */
+function buildJustification(
+  input: LegInput,
+  con: ConsensusSide | undefined,
+  benchmark: number,
+  edge: number,
+): Justification {
+  const gm = input.gm;
+  const lm = LEAGUE_MODEL[input.game.league];
+  const facts: string[] = [];
+  const statistics: string[] = [];
+
+  // --- facts: the observable inputs ---
+  if (gm.marginBasis === "ratings") {
+    facts.push(
+      `Schedule-adjusted ratings over ${gm.sampleGames.toFixed(1)} recency-weighted games project ${gm.blendedMargin > 0 ? input.game.home.abbreviation : input.game.away.abbreviation} by ${Math.abs(gm.blendedMargin).toFixed(1)} ${lm.unit}.`,
+    );
+  } else if (gm.marginBasis === "scoring" && gm.scoring) {
+    facts.push(
+      `Season scoring: ${input.game.home.abbreviation} ${gm.scoring.homeFor.toFixed(1)} for / ${gm.scoring.homeAgainst.toFixed(1)} against, ${input.game.away.abbreviation} ${gm.scoring.awayFor.toFixed(1)} / ${gm.scoring.awayAgainst.toFixed(1)} per game.`,
+    );
+  } else {
+    facts.push(
+      `No scoring or ratings data for these teams in the window, so the projection is the market's.`,
+    );
+  }
+
+  if (input.game.home.record || input.game.away.record) {
+    facts.push(
+      `Records: ${input.game.home.abbreviation} ${input.game.home.record ?? "N/A"}, ${input.game.away.abbreviation} ${input.game.away.record ?? "N/A"}.`,
+    );
+  }
+  if (gm.restNote) facts.push(`Schedule: ${gm.restNote}.`);
+  if (gm.weatherEffect) {
+    facts.push(
+      `Forecast at ${gm.weather?.venue ?? "the venue"}: ${gm.weatherEffect.note}.`,
+    );
+  }
+  if (gm.pitchers?.home?.era != null || gm.pitchers?.away?.era != null) {
+    facts.push(
+      `Probable starters: ${gm.pitchers.away?.name ?? "TBD"} (${gm.pitchers.away?.era?.toFixed(2) ?? "—"} ERA) at ${gm.pitchers.home?.name ?? "TBD"} (${gm.pitchers.home?.era?.toFixed(2) ?? "—"} ERA).`,
+    );
+  }
+  if (gm.parkFactor !== 1) {
+    facts.push(
+      `${input.game.home.abbreviation}'s park plays ${((gm.parkFactor - 1) * 100).toFixed(0)}% ${gm.parkFactor > 1 ? "above" : "below"} average for runs.`,
+    );
+  }
+  if (con && con.books > 1) {
+    facts.push(
+      `${con.books} bookmakers surveyed; best price ${formatOdds(con.bestAmerican)} at ${con.bestBook}.`,
+    );
+  } else {
+    facts.push(`One bookmaker quoted this market.`);
+  }
+
+  // --- statistics: the quantified part, with its errors ---
+  statistics.push(
+    `Consensus fair value ${(benchmark * 100).toFixed(1)}%${con && con.books > 1 ? ` ± ${(con.standardError * 100).toFixed(1)}pp across ${con.books} books` : " (single book, unverifiable)"}.`,
+  );
+  statistics.push(
+    `Break-even at the best available price is ${(impliedProbability(americanToDecimal(con?.bestAmerican ?? input.americanOdds)) * 100).toFixed(1)}%, so the price edge is ${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(1)}pp${con && con.books > 1 ? ` (${con.edgeSignificance.toFixed(1)}σ)` : ""}.`,
+  );
+  if (input.meta.kind === "margin" && input.meta.sigma != null) {
+    statistics.push(
+      `Priced off a ${gm.marginDist.family} margin distribution, σ ${input.meta.sigma.toFixed(1)} ${lm.unit}${gm.impliedSigma != null ? " read from the spread and moneyline together" : ""}.`,
+    );
+  }
+  if (input.meta.kind === "total" && input.meta.totalMean != null) {
+    statistics.push(
+      `Projected total ${input.meta.totalMean.toFixed(1)} against a posted ${input.meta.totalLine}, σ ${input.meta.totalSigma?.toFixed(1)}.`,
+    );
+  }
+  const push = input.meta.pushProbability ?? 0;
+  if (push > 0.005) {
+    statistics.push(
+      `${(push * 100).toFixed(1)}% chance of landing exactly on the number, which returns the stake; the probability above excludes it.`,
+    );
+  }
+  statistics.push(
+    `Information quality ${Math.round(gm.infoQuality * 100)}%${gm.blindSpots.length > 0 ? ` — ${gm.blindSpots.join("; ")}` : " — no known gaps"}.`,
+  );
+
+  // --- logic: why this side, at this price ---
+  const logic =
+    edge > 0
+      ? `The consensus says this is worth ${(benchmark * 100).toFixed(1)}% and the best book will pay as if it were ${(impliedProbability(americanToDecimal(con?.bestAmerican ?? input.americanOdds)) * 100).toFixed(1)}%. That gap is the entire case — it comes from the price being out of line with the other books, not from us claiming to forecast the game better than the market.`
+      : `There is no price edge here: every surveyed book prices this at or inside fair value, so backing it costs the hold in expectation. It is included for comparison, not as a play.`;
+
+  return { facts, logic, statistics };
+}
+
 function makeLeg(input: LegInput): SgpLeg {
   /*
    * Price the leg at the BEST number any surveyed book offers, and measure
@@ -1906,6 +2116,10 @@ function makeLeg(input: LegInput): SgpLeg {
     priceDispersion: con?.priceDispersion,
     fairStandardError: con?.standardError,
     edgeSignificance: con?.edgeSignificance,
+    riskFlags: buildRiskFlags(
+      input.gm, con, input.meta, edge, input.isModelled, movement,
+    ),
+    justification: buildJustification(input, con, benchmark, edge),
     league: input.game.league,
     matchup: `${input.game.away.abbreviation} @ ${input.game.home.abbreviation}`,
     market: input.market,
@@ -2468,6 +2682,11 @@ function legScore(leg: SgpLeg): number {
  */
 export function buildRecommendation(
   candidates: SgpLeg[],
+  /**
+   * Default slip length. The UI lets the user pick any length up to the cap
+   * and shows the expected-value cost of each one, so this is only a starting
+   * point rather than a recommendation.
+   */
   minLegs = 6,
   cap = 10,
   maxPerGame = 1,
@@ -2718,6 +2937,7 @@ export function buildRecommendation(
     correlated,
     /** EV is only meaningful when the combined price is actually obtainable. */
     expectedValueIsTheoretical: correlated,
+    candidates: ranked,
     modelVersion: MODEL_VERSION,
     inputs,
     modelVote: {

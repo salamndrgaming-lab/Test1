@@ -5,6 +5,9 @@ import type { SgpLeg } from "@/types";
 import { formatOdds, formatPct, classNames } from "@/lib/format";
 import { MarginCurve } from "@/components/sports/MarginCurve";
 
+/** High severity sorts first. */
+const SEVERITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
 const CONF_CLASS = {
   high: "bg-green-500/15 text-green-300",
   medium: "bg-amber-500/15 text-amber-300",
@@ -84,6 +87,7 @@ export function PickCard({
 }) {
   const [showWhy, setShowWhy] = useState(false);
   const [showCurve, setShowCurve] = useState(true);
+  const [showCase, setShowCase] = useState(false);
   // A curve is drawable for margin legs, and for totals once the model has
   // scoring data to project one (an unmodelled total has nothing to draw).
   const meta = leg.modelMeta;
@@ -232,7 +236,95 @@ export function PickCard({
       {showCurve && <MarginCurve leg={leg} />}
       {showWhy && <ConfidenceDetail leg={leg} />}
 
-      <p className="mt-2 text-sm text-[var(--muted)]">{leg.rationale}</p>
+      {/* Measured warnings, most serious first. */}
+      {(leg.riskFlags ?? []).length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {[...(leg.riskFlags ?? [])]
+            .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
+            .map((f) => (
+              <span
+                key={f.label}
+                title={f.detail}
+                className={classNames(
+                  "cursor-help rounded px-2 py-0.5 text-[0.65rem]",
+                  f.severity === "high"
+                    ? "bg-red-500/15 text-red-300"
+                    : f.severity === "medium"
+                      ? "bg-amber-500/15 text-amber-300"
+                      : "bg-[var(--surface-2)] text-[var(--muted)]",
+                )}
+              >
+                {f.severity === "high" ? "▲ " : f.severity === "medium" ? "△ " : "· "}
+                {f.label}
+              </span>
+            ))}
+        </div>
+      )}
+
+      {leg.justification ? (
+        <div className="mt-2 space-y-2 text-sm">
+          <p className="text-[var(--muted)]">{leg.justification.logic}</p>
+          <button
+            onClick={() => setShowCase((v) => !v)}
+            className="text-xs text-[var(--accent)] underline underline-offset-2"
+          >
+            {showCase ? "Hide the full case" : "Facts, logic & statistics"}
+          </button>
+          {showCase && (
+            <div className="space-y-2 rounded-lg bg-[var(--surface-2)] p-2.5 text-xs">
+              <div>
+                <p className="mb-1 font-semibold text-[var(--text)]">Facts</p>
+                <ul className="list-disc space-y-1 pl-4 text-[var(--muted)]">
+                  {leg.justification.facts.map((f) => (
+                    <li key={f}>{f}</li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <p className="mb-1 font-semibold text-[var(--text)]">
+                  Statistics
+                </p>
+                <ul className="list-disc space-y-1 pl-4 text-[var(--muted)]">
+                  {leg.justification.statistics.map((t) => (
+                    <li key={t}>{t}</li>
+                  ))}
+                </ul>
+              </div>
+              {(leg.riskFlags ?? []).length > 0 && (
+                <div>
+                  <p className="mb-1 font-semibold text-[var(--text)]">
+                    Why this could be wrong
+                  </p>
+                  <ul className="list-disc space-y-1 pl-4 text-[var(--muted)]">
+                    {(leg.riskFlags ?? []).map((f) => (
+                      <li key={f.label}>
+                        <span
+                          className={classNames(
+                            "font-medium",
+                            f.severity === "high"
+                              ? "text-red-300"
+                              : f.severity === "medium"
+                                ? "text-amber-300"
+                                : "text-[var(--muted)]",
+                          )}
+                        >
+                          {f.label}:
+                        </span>{" "}
+                        {f.detail}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <p className="text-[0.65rem] text-[var(--muted-2)]">
+                {leg.rationale}
+              </p>
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="mt-2 text-sm text-[var(--muted)]">{leg.rationale}</p>
+      )}
 
       <div className="mt-2 flex flex-wrap gap-1.5">
         {leg.supportingStats.map((s) => (

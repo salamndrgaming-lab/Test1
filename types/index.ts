@@ -219,6 +219,9 @@ export interface CompletedGame {
   awayAbbr?: string;
   homeScore: number;
   awayScore: number;
+  /** Home-side spread this game closed at, when it can be oriented. */
+  closingSpread?: number;
+  closingTotal?: number;
 }
 
 /**

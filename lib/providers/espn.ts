@@ -732,6 +732,37 @@ function easternDateStamp(d: Date): string {
  * detection, so there is a single source of truth and far fewer requests than
  * fetching each separately.
  */
+/**
+ * The home-side closing spread from a historical scoreboard entry.
+ *
+ * Same sign care as everywhere else: ESPN's raw `spread` is the FAVOURITE's,
+ * so it is only trustworthy once the details string tells us who that was.
+ * A spread we cannot orient is dropped rather than guessed, because a
+ * sign-flipped benchmark would make the market look far worse than it is and
+ * flatter the model by exactly that amount.
+ */
+function historicalHomeSpread(
+  odds: EspnOdds[] | undefined,
+  homeAbbr: string | undefined,
+  awayAbbr: string | undefined,
+): number | undefined {
+  const o = odds?.[0];
+  if (!o || !homeAbbr) return undefined;
+  const det = parseDetails(o.details);
+  if (det.abbr && det.line != null) {
+    const abs = Math.abs(det.line);
+    if (det.abbr === homeAbbr) return -abs;
+    if (awayAbbr && det.abbr === awayAbbr) return abs;
+  }
+  if (o.homeTeamOdds?.favorite && o.spread != null) {
+    return -Math.abs(o.spread);
+  }
+  if (o.awayTeamOdds?.favorite && o.spread != null) {
+    return Math.abs(o.spread);
+  }
+  return undefined;
+}
+
 export function parseCompletedGames(
   league: League,
   boards: EspnScoreboard[],
@@ -770,6 +801,15 @@ export function parseCompletedGames(
         awayAbbr: away?.team?.abbreviation,
         homeScore,
         awayScore,
+        // The line this game CLOSED at, which the historical payload already
+        // carries. Free, and it is the only thing that makes a retrodictive
+        // test of the model against the market possible.
+        closingSpread: historicalHomeSpread(comp?.odds, home?.team?.abbreviation, away?.team?.abbreviation),
+        closingTotal:
+          comp?.odds?.[0]?.overUnder != null &&
+          Number.isFinite(comp.odds[0].overUnder)
+            ? comp.odds[0].overUnder
+            : undefined,
       });
     }
   }

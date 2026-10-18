@@ -18,6 +18,7 @@ import { OddsBarChart } from "@/components/charts/OddsBarChart";
 import { SgpBuilder } from "@/components/sports/SgpBuilder";
 import { StandingsTable } from "@/components/sports/StandingsTable";
 import { CalibrationPanel } from "@/components/sports/CalibrationPanel";
+import { BacktestPanel } from "@/components/sports/BacktestPanel";
 import { AgeGate } from "@/components/AgeGate";
 import { classNames } from "@/lib/format";
 import { accentVars } from "@/lib/sections";
@@ -196,7 +197,13 @@ export default function SportsPage() {
           </div>
         ))}
 
-      {tab === "model" && <CalibrationPanel />}
+      {tab === "model" && (
+        <div className="space-y-6">
+          {/* Measured now, from history, rather than waiting for picks to settle. */}
+          <BacktestPanel />
+          <CalibrationPanel />
+        </div>
+      )}
 
       {tab === "sgp" && (
         <>

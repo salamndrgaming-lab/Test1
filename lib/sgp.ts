@@ -57,7 +57,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "edge-v16";
+export const MODEL_VERSION = "cells-v17";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -693,6 +693,28 @@ export const MAX_MODEL_WEIGHT = 0.35;
 export const MEASURED_MODEL_SKILL = 0;
 
 /**
+ * The vote, per market.
+ *
+ * Margin and total are measured separately because they are separate claims.
+ * Sides are the most heavily traded number on the board; totals take a
+ * fraction of the action and are the softer market in most books. Letting one
+ * number gate both meant a margin measurement was silently authorising the
+ * totals opinion, and a soft spot in totals could never surface because it was
+ * being averaged against efficiency in sides.
+ */
+export interface ModelVote {
+  margin: number;
+  total: number;
+}
+
+/** Accept a single number (both markets) or an explicit per-market pair. */
+export function normalizeVote(vote: number | ModelVote): ModelVote {
+  return typeof vote === "number"
+    ? { margin: vote, total: vote }
+    : { margin: vote.margin, total: vote.total };
+}
+
+/**
  * Season points for/against, with no adjustment for who you played. Strictly
  * weaker than the opponent-adjusted ratings, so it votes less.
  */
@@ -1028,7 +1050,7 @@ export function buildGameModel(
    * Defaults to MEASURED_MODEL_SKILL — i.e. zero — so nothing votes unless
    * measured evidence is handed in.
    */
-  modelVote: number = MEASURED_MODEL_SKILL,
+  modelVote: number | ModelVote = MEASURED_MODEL_SKILL,
 ): GameModel | null {
   const lm = LEAGUE_MODEL[game.league];
   if (!lm) return null;
@@ -1307,8 +1329,10 @@ export function buildGameModel(
       ? (RATING_PARAMS[game.league]?.priorGames ?? lm.priorGames)
       : lm.priorGames;
   const shrink = sampleGames / (sampleGames + prior);
-  // The vote is gated by measured skill. See MEASURED_MODEL_SKILL.
-  const vote = clamp(modelVote, 0, 1);
+  // The vote is gated by measured skill, per market. See MEASURED_MODEL_SKILL.
+  const votes = normalizeVote(modelVote);
+  const vote = clamp(votes.margin, 0, 1);
+  const totalVote = clamp(votes.total, 0, 1);
   const modelWeight =
     modelMargin === null ? 0 : maxWeight * shrink * infoQuality * vote;
   const blendedMargin =
@@ -1321,7 +1345,7 @@ export function buildGameModel(
   const totalWeight =
     modelTotal === null || marketTotal === null
       ? 0
-      : MAX_TOTAL_WEIGHT * shrink * infoQuality * vote;
+      : MAX_TOTAL_WEIGHT * shrink * infoQuality * totalVote;
   const blendedTotal =
     marketTotal === null
       ? modelTotal
@@ -2168,7 +2192,7 @@ export function legsFromGames(
   injuries: Record<string, TeamInjuryReport> = {},
   ratings: Record<string, TeamRating> = {},
   weather: Record<string, GameWeather> = {},
-  modelVote: number = MEASURED_MODEL_SKILL,
+  modelVote: number | ModelVote = MEASURED_MODEL_SKILL,
   /**
    * Optional collector for market-vs-itself opportunities. Passed in rather
    * than stashed in module state, which on a shared serverless instance
@@ -2785,9 +2809,16 @@ export function buildRecommendation(
   minLegs = 6,
   cap = 10,
   maxPerGame = 1,
-  modelVote: number = MEASURED_MODEL_SKILL,
+  modelVote: number | ModelVote = MEASURED_MODEL_SKILL,
   opportunities: GameOpportunities[] = [],
 ): SgpRecommendation {
+  const votes = normalizeVote(modelVote);
+  // The headline figure is the larger of the two, since that is the most the
+  // model is contributing anywhere on the slip.
+  const topVote = Math.max(
+    clamp(votes.margin, 0, 1),
+    clamp(votes.total, 0, 1),
+  );
   // Drop saturated legs before ranking. They would otherwise rank well — a
   // 99.9% probability against any price looks like enormous edge — while
   // being the one part of the distribution we can least justify. See
@@ -2900,8 +2931,8 @@ export function buildRecommendation(
     {
       label: "Model vote",
       detail:
-        modelVote > 0
-          ? `${Math.round(modelVote * 100)}% — measured`
+        topVote > 0
+          ? `margin ${Math.round(clamp(votes.margin, 0, 1) * 100)}% · total ${Math.round(clamp(votes.total, 0, 1) * 100)}% — measured`
           : "0% — no measured skill",
     },
     {
@@ -2950,9 +2981,10 @@ export function buildRecommendation(
   ];
 
   const notes: string[] = [
-    modelVote === 0
+    topVote === 0
       ? "Our own forecast currently votes ZERO on the published probability, and that is deliberate. Blending an independent view into a well-calibrated price only helps if the view carries information the price lacks; if it doesn't, the blend is the price plus noise, and adding noise to a calibrated probability strictly increases error — simulated at 2.5% of skill score at the weight this model used to carry, monotonically worse the more it votes. We have no measured evidence our deviation is skill (zero graded picks) and good reason to doubt it, since everything the model knows is public season data the market already has, along with lineups and injuries it doesn't. So the probability you see tracks the consensus; the projection is shown as context. The weight rises only when the prediction log measures skill against the closing line."
-      : `Our forecast votes ${Math.round(modelVote * 100)}% of its cap — a weight the backtest regression measured against the closing line, not one anybody chose. It rises and falls with the evidence.`,
+      : `Our forecast votes ${Math.round(clamp(votes.margin, 0, 1) * 100)}% of its cap on the margin and ${Math.round(clamp(votes.total, 0, 1) * 100)}% on the total — weights the backtest regression measured against the closing line, market by market, not ones anybody chose. The two are measured separately because they are separate claims: a margin result is not evidence about totals, and the significance bar each had to clear is corrected for how many league-by-market cells were tested, so a vote cannot be opened by the one cell out of twelve that happened to look good.`,
+    "Skill is measured per league AND per market, with the significance bar corrected for how many cells were tested. Sides and totals are different problems — sides take most of the action, totals are softer in most books — so one league-wide fit averaged a possible soft spot against efficiency in the other market and lost it. Splitting them means more tests, and more tests means more chances to be fooled: six leagues judged at the conventional two standard errors carries a 26.5% chance that at least one looks significant on noise alone, and twelve league-by-market cells carries 46%. The bar is therefore raised to spend one 5% error budget across every cell tested — twelve cells require |t| > 2.87 rather than 2.00 — so the vote cannot be opened by whichever cell happened to look best. Totals are also now error-checked against the closing total out-of-sample, which they never were before; the totals opinion was previously carrying weight on the strength of a margin measurement.",
     "What the model contributes instead is structural rather than predictive, and none of it depends on out-forecasting anyone: the shape of the outcome distribution, push probability on integer lines, exact same-game correlation, and a consensus across books that is a better estimate than any single book's price.",
     `Model ${MODEL_VERSION}: one projected margin and one projected total per game, from opponent-adjusted team ratings — an offense/defense pair solved from recent results so strength of schedule is divided out, with each game weighted by how recently it was played. Because the margin is net(home) − net(away) + home edge by construction, it is the same arithmetic the total uses, so the two markets can't contradict each other. Shrunk toward the de-vigged market by at most ${Math.round(MAX_MODEL_WEIGHT * 100)}% on the margin and ${Math.round(MAX_TOTAL_WEIGHT * 100)}% on the total; games with no results window fall back to unadjusted scoring rates (${Math.round(MAX_SCORING_WEIGHT * 100)}%), then the market alone. A win%-only prior is deliberately given no weight: it cannot separate two teams with the same record and opposite point differentials, it yields no totals opinion, and it fires exactly when we know least — so it only added motion, not signal.`,
     "The book's margin is removed with Shin's method rather than by proportional normalization. Books load more margin onto longshots, so splitting it evenly overstates a longshot's fair price and understates a heavy favourite's — which would read as free edge on exactly the short moneylines a parlay is built from.",
@@ -3038,8 +3070,10 @@ export function buildRecommendation(
     modelVersion: MODEL_VERSION,
     inputs,
     modelVote: {
-      weight: Number(clamp(modelVote, 0, 1).toFixed(3)),
-      source: modelVote > 0 ? "measured" : "gated",
+      weight: Number(topVote.toFixed(3)),
+      marginWeight: Number(clamp(votes.margin, 0, 1).toFixed(3)),
+      totalWeight: Number(clamp(votes.total, 0, 1).toFixed(3)),
+      source: topVote > 0 ? "measured" : "gated",
     },
     verdict,
     marketSurvey: {

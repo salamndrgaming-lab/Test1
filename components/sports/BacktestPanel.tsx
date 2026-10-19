@@ -140,65 +140,131 @@ export function BacktestPanel() {
               )}
             </div>
 
-            {r.skillFit && (
-              <div className="mb-3 rounded-lg bg-[var(--surface-2)] p-2.5">
-                <p className="mb-1.5 text-[0.7rem] font-semibold text-[var(--text)]">
-                  Does the projection add anything the line doesn&apos;t?
-                </p>
-                <p className="mb-2 text-[0.65rem] leading-relaxed text-[var(--muted)]">
-                  Both are offered as explanations of what actually happened,
-                  and the data decides. A market that already contains
-                  everything we know gives our coefficient zero and the
-                  line&apos;s one.
-                </p>
-                <div className="grid grid-cols-2 gap-2 text-[0.7rem]">
-                  <div>
-                    <p className="text-[var(--muted-2)]">Our projection</p>
-                    <p className="mt-0.5 font-semibold tabular-nums">
-                      {r.skillFit.ourWeight.toFixed(3)}
-                      <span className="ml-1 font-normal text-[var(--muted-2)]">
-                        ± {r.skillFit.ourStandardError.toFixed(3)}
-                      </span>
-                    </p>
-                    <p
-                      className={classNames(
-                        "tabular-nums",
-                        r.skillFit.significant ? "text-good" : "text-[var(--muted-2)]",
-                      )}
-                    >
-                      t = {r.skillFit.ourT.toFixed(2)}{" "}
-                      {r.skillFit.significant ? "· significant" : "· not significant"}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-[var(--muted-2)]">Closing line</p>
-                    <p className="mt-0.5 font-semibold tabular-nums">
-                      {r.skillFit.marketWeight.toFixed(3)}
-                    </p>
-                    <p className="tabular-nums text-[var(--muted-2)]">
-                      t = {r.skillFit.marketT.toFixed(2)}
-                    </p>
-                  </div>
+            {r.skillCells.length > 0 && (
+              <div className="mb-3 space-y-2 rounded-lg bg-[var(--surface-2)] p-2.5">
+                <div>
+                  <p className="mb-1.5 text-[0.7rem] font-semibold text-[var(--text)]">
+                    Does the projection add anything the line doesn&apos;t?
+                  </p>
+                  <p className="text-[0.65rem] leading-relaxed text-[var(--muted)]">
+                    Both are offered as explanations of what actually happened,
+                    and the data decides. A market that already contains
+                    everything we know gives our coefficient zero and the
+                    line&apos;s one. Measured separately per market, because a
+                    margin result is not evidence about totals.
+                  </p>
                 </div>
-                <p className="mt-2 text-[0.7rem] leading-relaxed">
-                  {r.skillFit.significant ? (
-                    <span className="text-good">
-                      Measured skill. This justifies a model vote of{" "}
-                      <span className="font-semibold">
-                        {(r.skillFit.justifiedVote * 100).toFixed(0)}%
-                      </span>
-                      , which the SGP tool now applies — a weight the data
-                      chose, not one anybody picked.
-                    </span>
-                  ) : (
-                    <span className="text-[var(--muted)]">
-                      No measured skill on this window, so the model vote stays
-                      at zero. That is the honest result and the reason the
-                      published probability tracks the consensus.
-                    </span>
-                  )}
+
+                {r.skillCells.map((cell) => (
+                  <div
+                    key={cell.market}
+                    className="rounded-lg border border-[var(--border)] p-2"
+                  >
+                    <p className="mb-1 text-[0.65rem] font-semibold uppercase tracking-wide text-[var(--muted-2)]">
+                      {cell.market === "margin"
+                        ? "Margin / spread"
+                        : "Game total"}{" "}
+                      · {cell.n} games
+                    </p>
+                    <div className="grid grid-cols-2 gap-2 text-[0.7rem]">
+                      <div>
+                        <p className="text-[var(--muted-2)]">Our projection</p>
+                        <p className="mt-0.5 font-semibold tabular-nums">
+                          {cell.ourWeight.toFixed(3)}
+                          <span className="ml-1 font-normal text-[var(--muted-2)]">
+                            ± {cell.ourStandardError.toFixed(3)}
+                          </span>
+                        </p>
+                        <p
+                          className={classNames(
+                            "tabular-nums",
+                            cell.significant
+                              ? "text-good"
+                              : "text-[var(--muted-2)]",
+                          )}
+                        >
+                          t = {cell.ourT.toFixed(2)} vs bar{" "}
+                          {cell.threshold.toFixed(2)}{" "}
+                          {cell.significant ? "· clears" : "· does not clear"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[var(--muted-2)]">Closing line</p>
+                        <p className="mt-0.5 font-semibold tabular-nums">
+                          {cell.marketWeight.toFixed(3)}
+                        </p>
+                        <p className="tabular-nums text-[var(--muted-2)]">
+                          t = {cell.marketT.toFixed(2)}
+                        </p>
+                      </div>
+                    </div>
+                    <p className="mt-1.5 text-[0.7rem] leading-relaxed">
+                      {cell.significant ? (
+                        <span className="text-good">
+                          Measured skill. Justifies a{" "}
+                          {cell.market === "margin" ? "margin" : "totals"} vote
+                          of{" "}
+                          <span className="font-semibold">
+                            {(cell.justifiedVote * 100).toFixed(0)}%
+                          </span>
+                          , which the SGP tool applies to that market only.
+                        </span>
+                      ) : (
+                        <span className="text-[var(--muted)]">
+                          No measured skill here, so this market&apos;s vote
+                          stays at zero and its published probability tracks the
+                          consensus.
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                ))}
+
+                <p className="text-[0.65rem] leading-relaxed text-[var(--muted-2)]">
+                  The bar is <strong>{r.skillCells[0].threshold.toFixed(2)}</strong>,
+                  not 2.00, because{" "}
+                  {r.skillCells[0].familySize === 1
+                    ? "one cell was tested"
+                    : `${r.skillCells[0].familySize} league-by-market cells were tested`}{" "}
+                  and the vote would open on any of them. At a flat |t| &gt; 2,
+                  testing {r.skillCells[0].familySize} cells carries a{" "}
+                  {(
+                    (1 - Math.pow(0.95, r.skillCells[0].familySize)) *
+                    100
+                  ).toFixed(0)}
+                  % chance that at least one looks significant by luck alone.
+                  Spending the 5% error rate across every cell is what stops the
+                  luckiest one from being mistaken for a finding.
                 </p>
               </div>
+            )}
+
+            {r.totalError && (
+              <table className="mb-3 w-full text-xs">
+                <thead>
+                  <tr className="text-[0.65rem] uppercase tracking-wide text-[var(--muted-2)]">
+                    <th className="pb-1 text-left font-medium">
+                      Total error ({r.totalError.n})
+                    </th>
+                    <th className="pb-1 text-right font-medium">Model</th>
+                    <th className="pb-1 text-right font-medium">Closing total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <Row
+                    label="Mean absolute error"
+                    model={r.totalError.modelMae}
+                    market={r.totalError.marketMae}
+                    unit=" pts"
+                  />
+                  <Row
+                    label="Root mean squared error"
+                    model={r.totalError.modelRmse}
+                    market={r.totalError.marketRmse}
+                    unit=" pts"
+                  />
+                </tbody>
+              </table>
             )}
 
             {(r.fitted.homeEdge != null || r.ratingSource) && (

@@ -458,7 +458,13 @@ export interface SgpRecommendation {
    * The model vote in force. Nonzero only when the backtest regression found
    * statistically significant skill against the closing line.
    */
-  modelVote: { weight: number; source: "measured" | "gated" };
+  modelVote: {
+    /** The larger of the two, i.e. the most the model contributes anywhere. */
+    weight: number;
+    marginWeight: number;
+    totalWeight: number;
+    source: "measured" | "gated";
+  };
   /**
    * What the market survey actually supports. "value" means at least one leg
    * is priced better than the consensus fair value. "no-edge" means the

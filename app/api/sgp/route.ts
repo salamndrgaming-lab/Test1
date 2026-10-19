@@ -14,7 +14,7 @@ import {
   fetchTeamScoring,
 } from "@/lib/providers/espn";
 import { buildAllRatings, linesAsResults, scheduleFromResults } from "@/lib/ratings";
-import { backtest } from "@/lib/backtest";
+import { backtest, votesFromBacktest } from "@/lib/backtest";
 import { fetchGameWeather } from "@/lib/providers/gameweather";
 import { fetchOddsApiBooks, oddsApiStatus } from "@/lib/providers/oddsapi";
 import {
@@ -125,17 +125,18 @@ export async function GET() {
 
     /*
      * The model's vote is whatever the regression could justify — the median
-     * across leagues that produced a significant fit, and zero otherwise. No
-     * constant is being chosen here; the data either supports a vote or it
-     * does not.
+     * of the cells that produced a significant fit, per market, and zero
+     * otherwise. No constant is being chosen here; the data either supports a
+     * vote or it does not.
+     *
+     * Two things matter about how this is now computed. It is split by market,
+     * because a margin measurement is not evidence about totals. And the
+     * significance bar every cell had to clear is corrected for how many cells
+     * were tested across all leagues and both markets — without that, running
+     * six leagues at |t| > 2 and opening the vote on any of them was a 26.5%
+     * chance of opening it on noise.
      */
-    const votes = measured
-      .map((m) => m.skillFit)
-      .filter((f): f is NonNullable<typeof f> => f != null && f.significant)
-      .map((f) => f.justifiedVote)
-      .sort((a, b) => a - b);
-    const modelVote =
-      votes.length > 0 ? votes[Math.floor(votes.length / 2)] : 0;
+    const modelVote = votesFromBacktest(measured);
 
     // Collected rather than returned in module state, so concurrent requests
     // on one instance cannot see each other's findings.

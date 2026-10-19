@@ -9,6 +9,7 @@ import {
   BACK_TO_BACK_PENALTY,
   LEAGUE_MODEL,
   normalCdf,
+  normalQuantile,
   scheduleEdge,
 } from "@/lib/sgp";
 import { regress } from "@/lib/regression";
@@ -90,6 +91,34 @@ export interface BacktestResult {
    */
   skillFit: SkillFit | null;
 
+  /**
+   * Every market tested for this league, each one its own regression.
+   *
+   * A single league-wide fit averages the margin market together with the
+   * totals market, and those are not the same problem: sides are the most
+   * heavily traded number on the board while totals get a fraction of the
+   * action, so a real soft spot in one can be cancelled by efficiency in the
+   * other. Splitting them is what makes a soft spot findable — at the price of
+   * more tests, which is why the significance bar is corrected for how many
+   * were run. See `bonferroniThreshold`.
+   */
+  skillCells: SkillCell[];
+
+  /**
+   * Our projected total against the closing total, on the same games.
+   *
+   * Totals were never measured out-of-sample before this, which meant the
+   * model's totals opinion was carrying weight on the strength of a margin
+   * measurement. Null when the window had too few closing totals.
+   */
+  totalError: {
+    modelMae: number;
+    modelRmse: number;
+    marketMae: number;
+    marketRmse: number;
+    n: number;
+  } | null;
+
   /** Constants fitted on this window, against what is configured. */
   fitted: {
     /** Empirical home advantage: the regression intercept on rating difference. */
@@ -140,10 +169,135 @@ export interface SkillFit {
   justifiedVote: number;
   /** Whether ourT cleared the significance bar. */
   significant: boolean;
+  /** How many cells the bar was corrected for. */
+  familySize: number;
+  /** The |t| this coefficient actually had to clear. */
+  threshold: number;
 }
 
-/** t-statistic a coefficient must clear before it is treated as real. */
+/** Which market a skill cell was measured on. */
+export type SkillMarket = "margin" | "total";
+
+export interface SkillCell extends SkillFit {
+  league: League;
+  market: SkillMarket;
+}
+
+/** t-statistic a single coefficient must clear before it is treated as real. */
 export const SIGNIFICANCE_T = 2;
+
+/** Family-wise error rate the corrected threshold targets. */
+export const FAMILY_ALPHA = 0.05;
+
+/**
+ * The |t| a coefficient must clear when it is one of `cells` tests.
+ *
+ * This fixes a flaw that was already live rather than merely guarding a new
+ * feature. The route runs one skill regression per league and opens the model
+ * vote on any league clearing |t| > 2, so with six leagues in season the
+ * chance of opening it on pure noise was 1 - 0.95^6 = 26.5%. Splitting by
+ * market doubles the number of tests and would have taken that to 46%. A
+ * threshold that does not know how many times you looked is not a threshold.
+ *
+ * Bonferroni: spend the family-wise alpha evenly, so each test runs at
+ * alpha/m two-tailed. It is the conservative correction — it assumes the tests
+ * could be independent and does not try to model their dependence — which is
+ * the right side to err on when the cost of a false positive is money.
+ *
+ * Floored at SIGNIFICANCE_T so a single test keeps the bar it always had
+ * (1.96 corrected to 2.00) instead of being quietly loosened.
+ */
+export function bonferroniThreshold(
+  cells: number,
+  alpha: number = FAMILY_ALPHA,
+): number {
+  const m = Math.max(1, Math.floor(cells));
+  const z = normalQuantile(1 - alpha / (2 * m));
+  return Number(Math.max(SIGNIFICANCE_T, z).toFixed(4));
+}
+
+interface RawFit {
+  ourWeight: number;
+  ourStandardError: number;
+  ourT: number;
+  marketWeight: number;
+  marketT: number;
+  n: number;
+  rSquared: number;
+}
+
+/**
+ * Turn a raw regression into a significance verdict at a family-corrected bar.
+ *
+ * Pure in (fit, familySize), which is what lets `backtest` re-decide across
+ * every league once it knows how many cells were tested in total. Calling it
+ * again with a larger family can only tighten the verdict, never loosen it.
+ */
+function decide(raw: RawFit, familySize: number): SkillFit {
+  const threshold = bonferroniThreshold(familySize);
+  const significant = Math.abs(raw.ourT) >= threshold && raw.ourWeight > 0;
+  const total = raw.ourWeight + raw.marketWeight;
+  const justified =
+    significant && total > 0
+      ? Math.min(1, Math.max(0, raw.ourWeight / total))
+      : 0;
+  return {
+    ourWeight: raw.ourWeight,
+    ourStandardError: raw.ourStandardError,
+    ourT: raw.ourT,
+    marketWeight: raw.marketWeight,
+    marketT: raw.marketT,
+    n: raw.n,
+    rSquared: raw.rSquared,
+    justifiedVote: Number(justified.toFixed(4)),
+    significant,
+    familySize: Math.max(1, Math.floor(familySize)),
+    threshold,
+  };
+}
+
+/** Re-decide a set of cells against the size of the family they belong to. */
+export function applyFamilyCorrection(cells: SkillCell[]): SkillCell[] {
+  return cells.map((c) => ({
+    league: c.league,
+    market: c.market,
+    ...decide(c, cells.length),
+  }));
+}
+
+/**
+ * Regress what happened on our projection AND the market's, together.
+ *
+ * Offering both at once is the whole point: it asks what weight the data puts
+ * on ours once the market's number is already in the equation, which is the
+ * only question that matters.
+ */
+function fitAgainstMarket(
+  actual: number[],
+  ours: number[],
+  market: number[],
+): RawFit | null {
+  const fit = regress(actual, [
+    { name: "ours", values: ours },
+    { name: "market", values: market },
+  ]);
+  if (!fit) return null;
+  const o = fit.coefficients.find((c) => c.name === "ours");
+  const m = fit.coefficients.find((c) => c.name === "market");
+  if (!o || !m) return null;
+  return {
+    ourWeight: o.value,
+    ourStandardError: o.standardError,
+    ourT: o.t,
+    marketWeight: m.value,
+    marketT: m.t,
+    n: fit.n,
+    rSquared: fit.rSquared,
+  };
+}
+
+/** Games a single cell needs before it is fitted at all. */
+const MIN_CELL_GAMES = 40;
 
 /**
  * Shrinkage multipliers tried for the line-fitted ratings.
@@ -200,6 +354,14 @@ export function backtestLeague(
     projectedFromLines: (number | null)[];
     actual: number;
     closingSpread?: number;
+    /**
+     * 2·leagueAvg + off(h) + def(a) + off(a) + def(h) — the same offense and
+     * defense pair the margin uses, so the two projections are arithmetically
+     * consistent by construction. The home edge cancels out of a total.
+     */
+    projectedTotal: number;
+    actualTotal: number;
+    closingTotal?: number;
     /** Rating difference alone, with no home-advantage term added. */
     ratingDiff: number;
     /** Schedule asymmetry in the league's back-to-back units. */
@@ -266,6 +428,14 @@ export function backtestLeague(
         projectedFromLines: lineProjections,
         actual: g.homeScore - g.awayScore,
         closingSpread: g.closingSpread,
+        projectedTotal:
+          2 * rated.leagueAvgScore +
+          home.offense +
+          away.defense +
+          away.offense +
+          home.defense,
+        actualTotal: g.homeScore + g.awayScore,
+        closingTotal: g.closingTotal,
         ratingDiff: home.net - away.net,
         scheduleAsymmetry: sched,
       });
@@ -276,6 +446,9 @@ export function backtestLeague(
 
   const withLine = predictions.filter(
     (p) => p.closingSpread != null && Number.isFinite(p.closingSpread),
+  );
+  const withTotal = predictions.filter(
+    (p) => p.closingTotal != null && Number.isFinite(p.closingTotal),
   );
 
   const mean = (xs: number[]) =>
@@ -350,48 +523,57 @@ export function backtestLeague(
 
   const round = (x: number) => Number(x.toFixed(4));
 
+  /* ---------------- totals, measured the same way ---------------- */
+  const totalModelErrs = withTotal.map((p) => p.projectedTotal - p.actualTotal);
+  const totalMarketErrs = withTotal.map(
+    (p) => (p.closingTotal as number) - p.actualTotal,
+  );
+  const totalError =
+    withTotal.length >= MIN_TEST_GAMES
+      ? {
+          modelMae: round(mae(totalModelErrs)),
+          modelRmse: round(rmse(totalModelErrs)),
+          marketMae: round(mae(totalMarketErrs)),
+          marketRmse: round(rmse(totalMarketErrs)),
+          n: withTotal.length,
+        }
+      : null;
+
   /* ---------------- the decisive measurement ---------------- *
    * Offer the data both explanations at once and let it choose. If the market
    * already contains everything we know, our coefficient collapses to zero
    * and the market's goes to one; that is the result that justifies a zero
    * model vote, and it would be justified by evidence rather than argument.
    */
-  let skillFit: SkillFit | null = null;
-  if (withLine.length >= 40) {
-    const fit = regress(
+  const rawCells: { market: SkillMarket; fit: RawFit }[] = [];
+  if (withLine.length >= MIN_CELL_GAMES) {
+    const fit = fitAgainstMarket(
       withLine.map((p) => p.actual),
-      [
-        { name: "ours", values: withLine.map((p) => p.projected) },
-        {
-          name: "market",
-          values: withLine.map((p) => -(p.closingSpread as number)),
-        },
-      ],
+      withLine.map((p) => p.projected),
+      withLine.map((p) => -(p.closingSpread as number)),
     );
-    if (fit) {
-      const ours = fit.coefficients.find((c) => c.name === "ours")!;
-      const market = fit.coefficients.find((c) => c.name === "market")!;
-      const significant = Math.abs(ours.t) >= SIGNIFICANCE_T && ours.value > 0;
-      const total = ours.value + market.value;
-      // Normalized share of the explanatory weight, and only when the
-      // coefficient is distinguishable from zero.
-      const justified =
-        significant && total > 0
-          ? Math.min(1, Math.max(0, ours.value / total))
-          : 0;
-      skillFit = {
-        ourWeight: ours.value,
-        ourStandardError: ours.standardError,
-        ourT: ours.t,
-        marketWeight: market.value,
-        marketT: market.t,
-        n: fit.n,
-        rSquared: fit.rSquared,
-        justifiedVote: round(justified),
-        significant,
-      };
-    }
+    if (fit) rawCells.push({ market: "margin", fit });
   }
+  if (withTotal.length >= MIN_CELL_GAMES) {
+    const fit = fitAgainstMarket(
+      withTotal.map((p) => p.actualTotal),
+      withTotal.map((p) => p.projectedTotal),
+      withTotal.map((p) => p.closingTotal as number),
+    );
+    if (fit) rawCells.push({ market: "total", fit });
+  }
+  /*
+   * Decided here against this league's own cell count, which is right when
+   * `backtestLeague` is called on its own. `backtest` re-decides every cell
+   * against the full cross-league family, which can only tighten the bar.
+   */
+  const skillCells: SkillCell[] = rawCells.map(({ market, fit }) => ({
+    league,
+    market,
+    ...decide(fit, rawCells.length),
+  }));
+  const skillFit: SkillFit | null =
+    skillCells.find((c) => c.market === "margin") ?? null;
 
   /* ---------------- constants the window can fit ---------------- *
    * Home advantage falls out as the intercept when actual margin is
@@ -484,6 +666,8 @@ export function backtestLeague(
     // the UI says so separately.
     meaningful: predictions.length >= 100 && withLine.length >= 50,
     skillFit,
+    skillCells,
+    totalError,
     fitted: {
       homeEdge: fittedHomeEdge,
       configuredHomeEdge: lm.homeEdge,
@@ -494,7 +678,15 @@ export function backtestLeague(
   };
 }
 
-/** Run the test for every league present in the window. */
+/**
+ * Run the test for every league present in the window.
+ *
+ * The significance bar is set here rather than inside each league, because
+ * only here is it known how many cells were tested in total. Every league ×
+ * market combination that got a regression is one look at the data, and the
+ * vote opens if ANY of them clears the bar — so the bar belongs to the whole
+ * family, not to the cell that happens to win.
+ */
 export function backtest(games: CompletedGame[]): BacktestResult[] {
   const leagues = [...new Set(games.map((g) => g.league))];
   const out: BacktestResult[] = [];
@@ -502,5 +694,36 @@ export function backtest(games: CompletedGame[]): BacktestResult[] {
     const r = backtestLeague(league, games);
     if (r) out.push(r);
   }
+
+  const corrected = applyFamilyCorrection(out.flatMap((r) => r.skillCells));
+  for (const r of out) {
+    r.skillCells = corrected.filter((c) => c.league === r.league);
+    r.skillFit = r.skillCells.find((c) => c.market === "margin") ?? null;
+  }
+
   return out.sort((a, b) => b.games - a.games);
+}
+
+/**
+ * The model vote each market can justify, from the corrected cells.
+ *
+ * Split by market because the two are different problems and a vote earned on
+ * one is not evidence about the other. The median of the significant cells is
+ * used rather than the best: taking the maximum would be a third bite at the
+ * same multiple-comparisons apple after the threshold has already been paid
+ * for.
+ */
+export function votesFromBacktest(results: BacktestResult[]): {
+  margin: number;
+  total: number;
+} {
+  const cells = results.flatMap((r) => r.skillCells);
+  const voteFor = (market: SkillMarket) => {
+    const vs = cells
+      .filter((c) => c.market === market && c.significant)
+      .map((c) => c.justifiedVote)
+      .sort((a, b) => a - b);
+    return vs.length > 0 ? vs[Math.floor(vs.length / 2)] : 0;
+  };
+  return { margin: voteFor("margin"), total: voteFor("total") };
 }

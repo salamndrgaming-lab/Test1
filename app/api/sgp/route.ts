@@ -158,8 +158,15 @@ export async function GET() {
         "No upcoming games with live odds are posted right now — check back closer to game time.",
       );
     }
+    /*
+     * Three legs by default, because that is what the expected-value curve
+     * says. Vig compounds at roughly 2pp per leg, so six legs surrendered
+     * ~16% of the stake before any forecast was involved and three surrenders
+     * ~6-8%. The user can still pick anything up to ten, with each length's
+     * expected value printed beside it.
+     */
     const recommendation = buildRecommendation(
-      legs, 6, 10, 1, modelVote, opportunities,
+      legs, 3, 10, 1, modelVote, opportunities,
     );
     // Report the price-feed state so a missing key is visible in the UI
     // rather than silently degrading to one book.

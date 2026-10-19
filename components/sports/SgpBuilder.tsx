@@ -237,9 +237,11 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
         <p className="mt-2 text-[0.7rem] leading-relaxed text-[var(--muted-2)]">
           The figure under each number is expected value per $1 at that length.
           It falls as legs are added because every leg pays the bookmaker&apos;s
-          margin again — that compounding, not the picks, is what makes long
-          parlays lose. Shorter is strictly better value; longer pays more when
-          it hits, far less often.
+          margin again — measured at roughly 2 percentage points per leg, so
+          ten legs surrender about a quarter of the stake to vig before a
+          single forecast is involved. That compounding, not the picks, is what
+          makes long parlays lose. The default starts short for that reason;
+          longer pays more when it hits, far less often.
         </p>
       </div>
 

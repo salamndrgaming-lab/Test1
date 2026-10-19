@@ -2802,11 +2802,22 @@ function legScore(leg: SgpLeg): number {
 export function buildRecommendation(
   candidates: SgpLeg[],
   /**
-   * Default slip length. The UI lets the user pick any length up to the cap
-   * and shows the expected-value cost of each one, so this is only a starting
-   * point rather than a recommendation.
+   * Default slip length.
+   *
+   * Measured, not chosen for how impressive the payout looks. Every leg pays
+   * the bookmaker's margin again, so expected value falls almost linearly
+   * with length — about 2pp per leg at a one-book price, 2pp with three books
+   * shopped. Six legs threw away 16% of the stake in vig before a single
+   * forecast was made; three throws away 6-8%, and the compounding is the
+   * reason, not the picks.
+   *
+   * It is not 1 only because a one-leg slip is not the thing this tool is
+   * for. Three is the shortest length that is still a parlay. The UI lets the
+   * user pick any length up to the cap and prints the expected value of each
+   * one next to it, so the cost of going longer is visible while choosing
+   * rather than buried in a note.
    */
-  minLegs = 6,
+  minLegs = 3,
   cap = 10,
   maxPerGame = 1,
   modelVote: number | ModelVote = MEASURED_MODEL_SKILL,

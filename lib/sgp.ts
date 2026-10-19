@@ -59,7 +59,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "platform-v18.1";
+export const MODEL_VERSION = "flags-v19";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -339,6 +339,22 @@ export const SATURATION_CEILING = 0.97;
  * own error".
  */
 export const MIN_EDGE_SIGNIFICANCE = 2;
+
+/**
+ * How far below fair value a best-of-all-books price has to sit before it is
+ * worth flagging, in probability.
+ *
+ * Every price is worse than fair value — that is what the book's margin is —
+ * so the question is never "is there a margin" but "is the margin still large
+ * after shopping". A typical two-way market holds around 4.5%, which is about
+ * 2.2pp per side, and shopping several books should recover most of it. A
+ * best price still 2pp below fair means shopping has not worked here, and
+ * that is a fact about this leg rather than about betting in general.
+ *
+ * On a live 42-leg slate this separated the worst quarter from the rest,
+ * where the old rule of "any price below fair" separated nothing at all.
+ */
+export const EXPENSIVE_PRICE = 0.02;
 
 /**
  * Projected scores for the count sports, derived from a projected total and
@@ -1807,14 +1823,35 @@ function buildRiskFlags(
         "Only one bookmaker quoted this market, so fair value is that book's own de-vigged price. Edge against it is circular and comes out at minus half its hold by arithmetic.",
     });
   } else if (edge <= 0) {
+    /*
+     * A price worse than fair value is the NORMAL state of a betting market,
+     * not a warning about this leg.
+     *
+     * This used to be severity "high", which made it fire on essentially
+     * every leg — 42 of 42 on a live slate — and a flag that fires on
+     * everything carries no information. Worse, it set the "shaky" count,
+     * so every slip read as entirely shaky and the flags that actually
+     * distinguish one leg from another (a single unverified book, conflicting
+     * market signals, thin information) were buried in the same number.
+     *
+     * Severity now scales with HOW bad the price is, which is the part that
+     * varies between legs. Only a price still expensive after shopping every
+     * surveyed book is worth a warning.
+     */
+    const expensive = edge <= -EXPENSIVE_PRICE;
     flags.push({
-      severity: "high",
-      label: "No price edge",
-      detail: `The best available price is ${Math.abs(edge * 100).toFixed(1)} points worse than the consensus fair value. This leg costs money in expectation; it is not a play.`,
+      severity: expensive ? "medium" : "low",
+      label: expensive ? "Expensive price" : "No price edge",
+      detail: expensive
+        ? `Even the best of ${con.books} books is ${Math.abs(edge * 100).toFixed(1)} points worse than consensus fair value — more than a typical book's half-hold, so shopping has not recovered the margin here. This leg costs money in expectation.`
+        : `The best available price is ${Math.abs(edge * 100).toFixed(1)} points worse than consensus fair value, which is the ordinary cost of the book's margin rather than a problem with this leg. It still costs money in expectation: a straight bet priced above fair value is the expected result on an efficient market, and the plays that do carry value are listed under market inconsistencies.`,
     });
   } else if ((con.edgeSignificance ?? 0) < MIN_EDGE_SIGNIFICANCE) {
     flags.push({
-      severity: "high",
+      // Not "high": this fires only where there IS apparent edge, which is
+      // the interesting case. Calling it the same severity as an unverified
+      // price overstated it.
+      severity: "medium",
       label: "Edge inside noise",
       detail: `The +${(edge * 100).toFixed(1)}pp gap is only ${con.edgeSignificance.toFixed(1)} standard errors from zero, against a ±${(con.standardError * 100).toFixed(1)}pp error on fair value. The books disagree with each other by more than this apparent edge.`,
     });

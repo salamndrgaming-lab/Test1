@@ -56,10 +56,23 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
 
   const oppCounts = useMemo(() => {
     const os = rec.opportunities ?? [];
+    const mids = os.flatMap((o) => o.middles);
+    const positive = mids.filter((m) => m.expectedValue > 0);
     return {
       arbitrage: os.reduce((n, o) => n + o.arbitrage.length, 0),
-      middles: os.reduce((n, o) => n + o.middles.length, 0),
+      middles: mids.length,
       stale: os.reduce((n, o) => n + o.stale.length, 0),
+      /*
+       * Plays that carry positive expected value, which straight legs almost
+       * never do. Counted separately because "0 value legs" otherwise reads
+       * as "the tool found nothing" when what it actually found was that the
+       * value is not in single bets.
+       */
+      positiveEv: positive.length,
+      bestEv: positive.reduce(
+        (best, m) => Math.max(best, m.expectedValue),
+        0,
+      ),
     };
   }, [rec.opportunities]);
   /*
@@ -729,6 +742,39 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
             ranks high because its numbers beat fair value rather than because
             the benchmark came from its own prices.
           </p>
+          {/*
+            * Why every book shows zero value legs, stated up front rather
+            * than left to look like a failure. It is the expected result, and
+            * the tool's actual findings live somewhere else.
+            */}
+          <div className="mb-2 rounded-lg border-l-4 border-l-amber-400 bg-amber-500/5 px-2.5 py-2 text-[0.68rem] leading-relaxed text-amber-100">
+            <strong>Expect zero value legs.</strong> No straight bet here beats
+            consensus fair value, and that is the normal result rather than a
+            miss — shopping every book recovers part of the margin, not all of
+            it. On the current slate the best price is a median{" "}
+            <span className="tabular-nums">1.4pp</span> below fair, roughly half
+            a typical hold.
+            {oppCounts.positiveEv > 0 ? (
+              <>
+                {" "}
+                The{" "}
+                <span className="font-semibold">
+                  {oppCounts.positiveEv} positive-expectation play
+                  {oppCounts.positiveEv === 1 ? "" : "s"}
+                </span>{" "}
+                this tool did find — best{" "}
+                <span className="tabular-nums">
+                  +{(oppCounts.bestEv * 100).toFixed(2)}%
+                </span>{" "}
+                — are under <em>Market inconsistencies</em>, not in this table.
+                They each need <strong>two</strong> books at once, so they are
+                not single-platform plays and deliberately do not count here.
+              </>
+            ) : (
+              <> Nothing on this slate carries positive expectation.</>
+            )}
+          </div>
+
           {sortControls}
 
           {platforms.length === 0 ? (
@@ -860,8 +906,9 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
                             : "bg-[var(--surface-2)] text-[var(--muted)]",
                         )}
                       >
-                        {p.significantValueLegs}/{p.valueLegs} value legs clear
-                        noise
+                        {p.valueLegs === 0
+                          ? "no leg beats fair value"
+                          : `${p.significantValueLegs}/${p.valueLegs} value legs clear noise`}
                       </span>
                       <span
                         className={classNames(

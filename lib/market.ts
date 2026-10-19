@@ -104,6 +104,19 @@ export interface ConsensusSide {
    * simply disagreeing with each other.
    */
   edgeSignificance: number;
+  /**
+   * EVERY book's price on this side, not just the best one.
+   *
+   * The best price is what the "shop everywhere" slip quotes, but that slip is
+   * not placeable: a three-leg slip whose legs are best at three different
+   * books needs three accounts. Keeping each book's own number is what lets a
+   * slip be rebuilt at one platform and priced honestly there.
+   *
+   * These are all quoted at the SAME line — `buildGameConsensus` filters to
+   * the modal spread and total before collecting, because a -3 and a -4.5 are
+   * different bets.
+   */
+  quotes: { book: string; american: number; breakEven: number }[];
 }
 
 /**
@@ -272,6 +285,16 @@ export function buildConsensus(quotes: Quote[]): ConsensusMarket {
       priceDispersion: Number(
         Math.abs(worstBreakEven - bestBreakEven).toFixed(4),
       ),
+      // Best first, so a per-platform view can read off where each book ranks.
+      quotes: quotes
+        .map((q) => ({
+          book: q.book,
+          american: q[which],
+          breakEven: Number(
+            impliedProbability(americanToDecimal(q[which])).toFixed(4),
+          ),
+        }))
+        .sort((a, b) => a.breakEven - b.breakEven),
     };
   };
 

@@ -341,6 +341,26 @@ export interface Justification {
   statistics: string[];
 }
 
+/**
+ * One leg's price at one specific book.
+ *
+ * The leg's headline figures use the BEST price across books, which is the
+ * right number when you can shop. It is the wrong number when you can only
+ * bet at one platform — so each book's own price is kept, with edge and
+ * expected value recomputed against the same consensus benchmark. Only the
+ * price changes; the benchmark and our probability do not.
+ */
+export interface LegBookPrice {
+  book: string;
+  americanOdds: number;
+  breakEvenProbability: number;
+  /** Consensus fair probability minus the break-even at THIS book. */
+  edge: number;
+  expectedValue: number;
+  kellyFraction: number;
+  edgeSignificance: number;
+}
+
 export interface SgpLeg {
   id: string;
   gameId: string;
@@ -393,6 +413,11 @@ export interface SgpLeg {
 
   /** Which book offers the price quoted above. */
   bestBook?: string;
+  /**
+   * This leg's price at every book that quoted it, best first. Present only
+   * where a real multi-book survey came back.
+   */
+  bookPrices?: LegBookPrice[];
   /** How many books were surveyed for this market. 1 = no shopping possible. */
   booksSurveyed?: number;
   /**
@@ -417,6 +442,60 @@ export interface SgpLeg {
   edgeSignificance?: number;
 }
 
+/**
+ * The best slip placeable entirely at one book.
+ *
+ * This exists because the headline slip is not placeable. It prices every leg
+ * at whichever book offers the best number, which is correct when you can
+ * shop — and a three-leg slip whose legs are best at three different books
+ * needs three funded accounts to actually bet. Most people have one or two.
+ *
+ * So each book is given its own slip: only the legs it actually quotes, at
+ * its own prices, ranked and capped the same way. Edge is still measured
+ * against the cross-book consensus fair value, which is the point — a book
+ * ranks well here because its numbers beat fair value, not because the
+ * benchmark was re-derived from its own prices.
+ *
+ * Expect every platform slip to be worse than the shop-everywhere slip. That
+ * gap is the cost of having one account, and it is a real cost rather than a
+ * presentational one. The comparison that matters is between platforms.
+ */
+export interface PlatformSlip {
+  book: string;
+  /** Legs this book quotes, out of the whole candidate pool. */
+  legsAvailable: number;
+  /** Distinct games it quotes among them. */
+  gamesAvailable: number;
+  /** The slip itself, up to the cap, repriced at this book. */
+  legs: SgpLeg[];
+  combinedDecimalOdds: number;
+  combinedAmericanOdds: number;
+  /** Market marginals with the model's correlation — the basis for EV. */
+  fairProbability: number;
+  /** Break-even at the combined price. */
+  impliedProbability: number;
+  /** Expected profit per $1 staked on the slip at this length. */
+  expectedValue: number;
+  /** Expected value per $1 at each length 1..legs.length. */
+  evByLength: number[];
+  /** Legs priced better than consensus fair value at this book. */
+  valueLegs: number;
+  /** Of those, how many clear MIN_EDGE_SIGNIFICANCE rather than sitting in noise. */
+  significantValueLegs: number;
+  /** Legs carrying a high-severity risk flag. */
+  shakyLegs: number;
+  /** Mean per-leg edge at this book, in probability. */
+  meanLegEdge: number;
+  /**
+   * How much worse this book's prices are than the best available, averaged
+   * over the legs in the slip, in probability points. Zero means this book
+   * had the best number on every leg it is being asked for.
+   */
+  priceGapVsBest: number;
+  /** True when this book had the best number on every leg in its slip. */
+  bestOnEveryLeg: boolean;
+}
+
 export interface SgpRecommendation {
   id: string;
   title: string;
@@ -426,6 +505,15 @@ export interface SgpRecommendation {
    * choose any length without another request.
    */
   candidates: SgpLeg[];
+  /**
+   * The best slip placeable at each single book, ranked by expected value.
+   *
+   * The headline slip above shops every leg to its best book, which is right
+   * when you can shop and useless when you cannot — it may need three
+   * accounts to place three legs. These are the one-account versions. Empty
+   * when only one book was surveyed, since there is nothing to choose between.
+   */
+  platforms?: PlatformSlip[];
   combinedDecimalOdds: number;
   combinedAmericanOdds: number;
   /** Break-even probability implied by the combined price. */

@@ -15,10 +15,27 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
   // The pool is every usable leg, ranked. Choosing a leg count rebuilds the
   // slip from it without another request; individual legs can still be
   // toggled afterwards.
-  const pool = rec.candidates.length > 0 ? rec.candidates : rec.legs;
+  /*
+   * Which platform the slip is priced for.
+   *
+   * null means "shop everywhere" — every leg at whichever book offers the
+   * best number. That is the highest-value slip and it is NOT placeable at a
+   * single sportsbook, so picking a platform swaps the pool for the legs that
+   * book actually quotes, at its own prices. Everything downstream is
+   * unchanged: the leg-count selector, the payout and the cards all read the
+   * pool.
+   */
+  const platforms = rec.platforms ?? [];
+  const [platform, setPlatform] = useState<string | null>(null);
+  const activePlatform = platform
+    ? platforms.find((p) => p.book === platform)
+    : undefined;
+
+  const shoppedPool = rec.candidates.length > 0 ? rec.candidates : rec.legs;
+  const pool = activePlatform ? activePlatform.legs : shoppedPool;
   const maxLegs = Math.min(10, pool.length);
   const [legCount, setLegCount] = useState(
-    Math.min(rec.legs.length || 1, maxLegs),
+    Math.min(rec.legs.length || 1, Math.min(10, shoppedPool.length)),
   );
 
   // One leg per game, so the combined price's independence assumption holds.
@@ -40,7 +57,6 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
     return out;
   }, [pool]);
 
-  const autoSlip = useMemo(() => slipFor(legCount), [legCount, slipFor]);
   /*
    * The requested length and the chosen legs move together, so they are one
    * piece of state updated in the click handler. An effect that re-seeded the
@@ -55,14 +71,58 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
     setLegCount(n);
     setSelectedIds(new Set(slipFor(n).map((l) => l.id)));
   };
+
+  /*
+   * Switching platform changes which legs exist, so the length and the
+   * selection are reseeded in the same handler rather than in an effect — the
+   * click already knows both, and a book offering only three legs must not
+   * leave a stale seven-leg selection behind.
+   */
+  const choosePlatform = (book: string | null) => {
+    const next = book ? platforms.find((p) => p.book === book) : undefined;
+    const nextPool = next ? next.legs : shoppedPool;
+    const nextMax = Math.min(10, nextPool.length);
+    const n = Math.max(1, Math.min(legCount, nextMax));
+    const seen = new Set<string>();
+    const seed: string[] = [];
+    for (const leg of nextPool) {
+      if (seed.length >= n) break;
+      if (seen.has(leg.gameId)) continue;
+      seen.add(leg.gameId);
+      seed.push(leg.id);
+    }
+    setPlatform(book);
+    setLegCount(n);
+    setSelectedIds(new Set(seed));
+  };
   const [stake, setStake] = useState(10);
   const [acknowledged, setAcknowledged] = useState(false);
   const { record } = usePredictions();
 
-  // Log every pick the model shows, so it can be graded once games finish.
-  const legIds = autoSlip.map((l) => l.id).join(",");
+  /*
+   * Log every pick the model shows, so it can be graded once games finish.
+   *
+   * Deliberately logged from the SHOPPED pool rather than the active
+   * platform's. The prediction log measures the model against the closing
+   * line, and that measurement has to sit on one consistent price basis —
+   * re-logging the same pick at a different book's number every time the user
+   * switches platform would make the graded history a record of which tab was
+   * open, not of whether the forecast was any good.
+   */
+  const logSlip = useMemo(() => {
+    const out: typeof shoppedPool = [];
+    const seen = new Set<string>();
+    for (const leg of shoppedPool) {
+      if (out.length >= legCount) break;
+      if (seen.has(leg.gameId)) continue;
+      seen.add(leg.gameId);
+      out.push(leg);
+    }
+    return out;
+  }, [shoppedPool, legCount]);
+  const legIds = logSlip.map((l) => l.id).join(",");
   useEffect(() => {
-    record(autoSlip);
+    record(logSlip);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [legIds]);
 
@@ -195,6 +255,151 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
         </div>
       )}
 
+      {/* Which sportsbook the slip has to be placeable at */}
+      {platforms.length > 1 && (
+        <div className="card">
+          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="font-semibold">Which sportsbook?</h3>
+            <span className="text-[0.7rem] text-[var(--muted-2)]">
+              {platforms.length} surveyed
+            </span>
+          </div>
+          <p className="mb-2 text-[0.7rem] leading-relaxed text-[var(--muted-2)]">
+            The default slip prices every leg at whichever book offers the best
+            number. That is the best value available — and it is{" "}
+            <strong>not placeable at one sportsbook</strong>, because the legs
+            can be best at different books. Pick a platform and the slip is
+            rebuilt from only the legs that book quotes, at its own prices.
+            Expect less value; the gap is the cost of having one account.
+          </p>
+
+          <div className="no-scrollbar -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
+            <button
+              onClick={() => choosePlatform(null)}
+              className={classNames(
+                "flex min-w-[6.5rem] shrink-0 flex-col items-start rounded-xl border px-2.5 py-1.5 text-left transition-colors",
+                platform === null
+                  ? "border-sky-400 bg-sky-400/10"
+                  : "border-[var(--border)] hover:border-[var(--accent)]/50",
+              )}
+            >
+              <span className="text-xs font-semibold">Shop everywhere</span>
+              <span className="text-[0.6rem] text-[var(--muted-2)]">
+                best price per leg
+              </span>
+              <span className="text-[0.6rem] text-amber-300">
+                needs several accounts
+              </span>
+            </button>
+            {platforms.map((p) => {
+              const ev = p.evByLength[Math.min(legCount, p.evByLength.length) - 1] ?? 0;
+              return (
+                <button
+                  key={p.book}
+                  onClick={() => choosePlatform(p.book)}
+                  className={classNames(
+                    "flex min-w-[6.5rem] shrink-0 flex-col items-start rounded-xl border px-2.5 py-1.5 text-left transition-colors",
+                    platform === p.book
+                      ? "border-sky-400 bg-sky-400/10"
+                      : "border-[var(--border)] hover:border-[var(--accent)]/50",
+                  )}
+                >
+                  <span className="truncate text-xs font-semibold">
+                    {p.book}
+                  </span>
+                  <span
+                    className={classNames(
+                      "text-[0.6rem] tabular-nums",
+                      ev >= 0 ? "text-good" : "text-[var(--muted-2)]",
+                    )}
+                  >
+                    {ev >= 0 ? "+" : ""}
+                    {(ev * 100).toFixed(1)}% EV
+                  </span>
+                  <span className="text-[0.6rem] text-[var(--muted-2)] tabular-nums">
+                    {p.legs.length} leg{p.legs.length === 1 ? "" : "s"}
+                    {p.bestOnEveryLeg
+                      ? " · best prices"
+                      : ` · −${(p.priceGapVsBest * 100).toFixed(1)}pp/leg`}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* The full comparison, so the ranking can be checked rather than trusted */}
+          <table className="mt-2 w-full text-[0.7rem]">
+            <thead>
+              <tr className="text-[0.6rem] uppercase tracking-wide text-[var(--muted-2)]">
+                <th className="pb-1 text-left font-medium">Book</th>
+                <th className="pb-1 text-right font-medium">Legs</th>
+                <th className="pb-1 text-right font-medium">Mean edge</th>
+                <th className="pb-1 text-right font-medium">Value legs</th>
+                <th className="pb-1 text-right font-medium">Shaky</th>
+              </tr>
+            </thead>
+            <tbody>
+              {platforms.map((p) => (
+                <tr
+                  key={p.book}
+                  className={classNames(
+                    "border-t border-[var(--border)]",
+                    platform === p.book ? "bg-sky-400/5" : "",
+                  )}
+                >
+                  <td className="py-1 pr-2">
+                    <button
+                      onClick={() => choosePlatform(p.book)}
+                      className="text-left hover:text-[var(--accent)]"
+                    >
+                      {p.book}
+                    </button>
+                    <span className="ml-1 text-[0.6rem] text-[var(--muted-2)]">
+                      {p.gamesAvailable} game{p.gamesAvailable === 1 ? "" : "s"}
+                    </span>
+                  </td>
+                  <td className="py-1 text-right tabular-nums">
+                    {p.legs.length}
+                  </td>
+                  <td
+                    className={classNames(
+                      "py-1 text-right tabular-nums",
+                      p.meanLegEdge >= 0 ? "text-good" : "text-[var(--muted)]",
+                    )}
+                  >
+                    {p.meanLegEdge >= 0 ? "+" : ""}
+                    {(p.meanLegEdge * 100).toFixed(2)}pp
+                  </td>
+                  <td className="py-1 text-right tabular-nums">
+                    {p.significantValueLegs}
+                    <span className="text-[var(--muted-2)]">
+                      /{p.valueLegs}
+                    </span>
+                  </td>
+                  <td
+                    className={classNames(
+                      "py-1 text-right tabular-nums",
+                      p.shakyLegs > 0 ? "text-bad" : "text-[var(--muted-2)]",
+                    )}
+                  >
+                    {p.shakyLegs}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-1.5 text-[0.6rem] leading-relaxed text-[var(--muted-2)]">
+            Mean edge is the average gap between each leg&apos;s price at this
+            book and the consensus fair value across all of them — so a book
+            ranks well here because its numbers beat fair value, never because
+            the benchmark was recomputed from its own prices. Value legs counts
+            those priced above fair value, and the first figure is how many of
+            those clear the books&apos; own disagreement rather than sitting
+            inside it.
+          </p>
+        </div>
+      )}
+
       {/* Leg count, with the cost of each extra leg visible while choosing */}
       <div className="card">
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
@@ -202,6 +407,7 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
           <span className="text-[0.7rem] text-[var(--muted-2)]">
             {pool.length} candidate{pool.length === 1 ? "" : "s"} from{" "}
             {new Set(pool.map((l) => l.gameId)).size} games
+            {activePlatform ? ` at ${activePlatform.book}` : ""}
           </span>
         </div>
         <div className="no-scrollbar -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
@@ -250,7 +456,14 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <p className="text-xs text-[var(--muted)]">
-              {selectedLegs.length}-leg slip · combined odds
+              {selectedLegs.length}-leg slip ·{" "}
+              {activePlatform ? (
+                <span className="text-sky-300">{activePlatform.book}</span>
+              ) : platforms.length > 1 ? (
+                <span className="text-amber-300">best price per leg</span>
+              ) : (
+                "combined odds"
+              )}
             </p>
             <p className="text-2xl font-bold tabular-nums">
               {payout ? formatOdds(payout.americanOdds) : "—"}

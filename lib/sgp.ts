@@ -5,7 +5,9 @@ import type {
   League,
   LineMovement,
   Justification,
+  LegBookPrice,
   MarketOdds,
+  PlatformSlip,
   ProbablePitcher,
   RiskFlag,
   TeamInjuryReport,
@@ -57,7 +59,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "cells-v17";
+export const MODEL_VERSION = "platform-v18";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -2132,6 +2134,33 @@ function makeLeg(input: LegInput): SgpLeg {
   }
 
   const priceEdge = con ? con.priceEdge : null;
+  /*
+   * The same leg priced at every book that quoted it.
+   *
+   * Edge is recomputed against the SAME consensus benchmark — only the price
+   * moves. That keeps the comparison between platforms honest: a book looks
+   * good here because its number is better than fair value, never because the
+   * benchmark was recomputed to flatter it.
+   *
+   * Only built when a real survey came back. With one book this would be a
+   * one-row list restating the headline price, which is noise.
+   */
+  const bookPrices: LegBookPrice[] | undefined =
+    con && con.books > 1 && con.quotes.length > 1
+      ? con.quotes.map((q) => {
+          const d = americanToDecimal(q.american);
+          const e = benchmark - q.breakEven;
+          return {
+            book: q.book,
+            americanOdds: q.american,
+            breakEvenProbability: q.breakEven,
+            edge: Number(e.toFixed(4)),
+            expectedValue: Number(expectedValue(benchmark, d).toFixed(4)),
+            kellyFraction: Number(kellyFraction(benchmark, d).toFixed(4)),
+            edgeSignificance: Number((e / con.standardError).toFixed(2)),
+          };
+        })
+      : undefined;
   const saturated =
     input.modelProb >= SATURATION_CEILING ||
     input.modelProb <= 1 - SATURATION_CEILING;
@@ -2141,6 +2170,7 @@ function makeLeg(input: LegInput): SgpLeg {
     gameId: input.game.id,
     saturated,
     bestBook: con?.bestBook,
+    bookPrices,
     booksSurveyed: con?.books ?? 1,
     priceEdge: priceEdge === null ? undefined : priceEdge,
     priceDispersion: con?.priceDispersion,
@@ -2791,6 +2821,115 @@ function legScore(leg: SgpLeg): number {
   return legEdge(leg) * (0.4 + 0.6 * (leg.confidenceScore ?? 0.5));
 }
 
+/* ------------------------------------------------------------------ *
+ * 9b. Per-platform slips
+ * ------------------------------------------------------------------ */
+
+/**
+ * Reprice one leg at one book, leaving the benchmark and our forecast alone.
+ *
+ * Returns null when the book did not quote this leg at all, which is the case
+ * that must not silently fall back to the best price — doing so would show a
+ * slip the user cannot place and call it theirs.
+ */
+function legAtBook(leg: SgpLeg, book: string): SgpLeg | null {
+  const q = leg.bookPrices?.find((b) => b.book === book);
+  if (!q) return null;
+  return {
+    ...leg,
+    americanOdds: q.americanOdds,
+    breakEvenProbability: q.breakEvenProbability,
+    edge: q.edge,
+    expectedValue: q.expectedValue,
+    kellyFraction: q.kellyFraction,
+    edgeSignificance: q.edgeSignificance,
+    priceEdge: q.edge,
+    bestBook: book,
+  };
+}
+
+/**
+ * Build one slip per book, best first.
+ *
+ * Ranking books by their slip's expected value rather than by how many legs
+ * they quote: a book that quotes everything at bad numbers is worse than one
+ * that quotes half the board well.
+ */
+export function buildPlatformSlips(
+  candidates: SgpLeg[],
+  cap = 10,
+  maxPerGame = 1,
+): PlatformSlip[] {
+  const usable = candidates.filter((l) => !l.saturated && l.bookPrices?.length);
+  const books = [
+    ...new Set(usable.flatMap((l) => l.bookPrices!.map((b) => b.book))),
+  ];
+
+  const slips: PlatformSlip[] = [];
+  for (const book of books) {
+    const available = usable
+      .map((l) => legAtBook(l, book))
+      .filter((l): l is SgpLeg => l !== null);
+    if (available.length === 0) continue;
+
+    // Same ranking and same one-leg-per-game rule as the main slip, so the
+    // only difference between platforms is the prices.
+    const ranked = [...available].sort((a, b) => legScore(b) - legScore(a));
+    const perGame = new Map<string, number>();
+    const legs: SgpLeg[] = [];
+    for (const leg of ranked) {
+      if (legs.length >= cap) break;
+      const used = perGame.get(leg.gameId) ?? 0;
+      if (used >= maxPerGame) continue;
+      perGame.set(leg.gameId, used + 1);
+      legs.push(leg);
+    }
+    if (legs.length === 0) continue;
+
+    const payout = calculatePayout(1, legs);
+    const evByLength = legs.map(
+      (_, i) => calculatePayout(1, legs.slice(0, i + 1)).expectedValue,
+    );
+
+    // How far off the best number this book is, on the legs it is quoting.
+    const gaps = legs.map((l) => {
+      const best = candidates.find((c) => c.id === l.id);
+      const bestEdge = best?.bookPrices?.[0]?.edge ?? l.edge;
+      return bestEdge - l.edge;
+    });
+    const meanGap =
+      gaps.length > 0 ? gaps.reduce((a, b) => a + b, 0) / gaps.length : 0;
+
+    slips.push({
+      book,
+      legsAvailable: available.length,
+      gamesAvailable: new Set(available.map((l) => l.gameId)).size,
+      legs,
+      combinedDecimalOdds: payout.decimalOdds,
+      combinedAmericanOdds: payout.americanOdds,
+      fairProbability: payout.fairProbability,
+      impliedProbability: payout.impliedProbability,
+      expectedValue: payout.expectedValue,
+      evByLength,
+      valueLegs: legs.filter((l) => l.edge > 0).length,
+      significantValueLegs: legs.filter(
+        (l) => l.edge > 0 && (l.edgeSignificance ?? 0) >= MIN_EDGE_SIGNIFICANCE,
+      ).length,
+      shakyLegs: legs.filter((l) =>
+        (l.riskFlags ?? []).some((f) => f.severity === "high"),
+      ).length,
+      meanLegEdge: Number(
+        (legs.reduce((a, l) => a + l.edge, 0) / legs.length).toFixed(4),
+      ),
+      priceGapVsBest: Number(meanGap.toFixed(4)),
+      bestOnEveryLeg: gaps.every((g) => g <= 1e-9),
+    });
+  }
+
+  // Best expected value first — that is the question "which platform?" asks.
+  return slips.sort((a, b) => b.expectedValue - a.expectedValue);
+}
+
 /**
  * Assemble the research slip.
  *
@@ -2836,6 +2975,8 @@ export function buildRecommendation(
   // SATURATION_CEILING.
   const excluded = candidates.filter((l) => l.saturated);
   const usable = candidates.filter((l) => !l.saturated);
+  // One slip per book, each placeable at that book alone. See PlatformSlip.
+  const platforms = buildPlatformSlips(usable, cap, maxPerGame);
   const ranked = [...usable].sort((a, b) => legScore(b) - legScore(a));
   const perGame = new Map<string, number>();
   const legs: SgpLeg[] = [];
@@ -2951,6 +3092,13 @@ export function buildRecommendation(
       detail: maxBooks > 1 ? `${maxBooks} — shopped` : "1 — no shopping",
     },
     {
+      label: "Placeable at",
+      detail: (() => {
+        if (platforms.length === 0) return "1 book — nothing to compare";
+        return `${platforms.length} platform${platforms.length === 1 ? "" : "s"} — best ${platforms[0].book}`;
+      })(),
+    },
+    {
       label: "Value legs",
       detail:
         valueLegs > 0
@@ -3008,6 +3156,7 @@ export function buildRecommendation(
     `Each sport is priced on its own distribution${families.length ? ` (${families.join(", ")})` : ""}, not a single normal curve: hockey and baseball margins are a difference of two Poissons, football margins are reweighted toward the key numbers 3 and 7, and basketball uses a discretized normal. Every distribution is discrete, so a line that can be landed on exactly carries real push mass and the published probability is conditional on not pushing.`,
     "Injuries are detected but never quantified. We can't tell a starter from a third-stringer from this feed, so a team with players out reduces how much the model's own view counts rather than moving the projection — the model defers to the market precisely where it is least informed.",
     "Edge, expected value and Kelly are measured from the PRICE: the gap between the consensus fair value across the surveyed books and the break-even at the best number any of them offers. Our own projection is reported but deliberately excluded from those figures, because we have no measured evidence yet that its disagreement with the market is skill rather than noise — that is what the closing-line log exists to find out. Counting it would have claimed +16.6pp of edge on a market where three books quoted identical prices and there was nothing to win.",
+    "The headline slip prices each leg at whichever surveyed book offers the best number, which is the best value available and is not placeable at one sportsbook — a three-leg slip can need three funded accounts. So a separate slip is built for each book, containing only the legs that book actually quotes, at its own prices, and never silently falling back to a better book's number for a leg it doesn't offer. Every platform is still measured against the same cross-book consensus fair value, so a book ranks well because its prices beat fair value rather than because the benchmark was re-derived from its own prices. Every platform slip is worse than the shop-everywhere slip by construction; that gap is the real cost of having one account, and it is reported per leg.",
     "An outlier price sets the best price but never the benchmark. A book quoting a two-way market below 100% is arbitraging itself, which in practice means one of its numbers is stale — the least reliable estimate of the truth even when it is the best thing to bet into.",
     "Line movement since the market opened is reported and folded into confidence, but never into the probability: the current price already contains it, so adding it again would double-count the same information.",
     "Back-to-backs are read from the last two days of results and applied inside our projection (NBA/NCAAB ~1.5-1.8 pts, NHL ~0.2 goals), so a rested team is never credited twice.",
@@ -3077,6 +3226,7 @@ export function buildRecommendation(
     /** EV is only meaningful when the combined price is actually obtainable. */
     expectedValueIsTheoretical: correlated,
     candidates: ranked,
+    platforms,
     opportunities,
     modelVersion: MODEL_VERSION,
     inputs,

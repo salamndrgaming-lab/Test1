@@ -226,7 +226,7 @@ export function parseEventBooks(
     const title = b.title ?? b.key;
     if (!title) continue;
 
-    const price: BookPrice = { book: title };
+    const price: BookPrice = { book: title, lastUpdate: b.last_update };
 
     for (const m of b.markets ?? []) {
       const outcomes = m.outcomes ?? [];

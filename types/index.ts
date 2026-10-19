@@ -103,6 +103,12 @@ export interface Game {
 /** One bookmaker's prices on one game. */
 export interface BookPrice {
   book: string;
+  /**
+   * When this bookmaker last moved, as the feed reports it. A book whose
+   * timestamp lags the field is offering a price the others have already
+   * revised — which is observable rather than inferred.
+   */
+  lastUpdate?: string;
   homeMoneyline?: number;
   awayMoneyline?: number;
   spread?: number;
@@ -482,6 +488,30 @@ export interface SgpRecommendation {
       leaguesCached: number;
     } | null;
   };
+  /**
+   * Edge from the market disagreeing with itself — arbitrage, middles and
+   * stale books. None of it requires out-forecasting anyone.
+   */
+  opportunities?: {
+    matchup: string;
+    arbitrage: {
+      market: string;
+      sideA: { label: string; book: string; american: number };
+      sideB: { label: string; book: string; american: number };
+      guaranteedReturn: number;
+      stakeShareA: number;
+    }[];
+    middles: {
+      market: string;
+      lowSide: { label: string; book: string; american: number; line: number };
+      highSide: { label: string; book: string; american: number; line: number };
+      gapFrom: number;
+      gapTo: number;
+      middleProbability: number;
+      expectedValue: number;
+    }[];
+    stale: { book: string; minutesBehind: number; deviation: number }[];
+  }[];
   /** Plain-language notes about the model and its caveats. */
   notes: string[];
   disclaimer: string;

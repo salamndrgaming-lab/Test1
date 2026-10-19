@@ -17,7 +17,11 @@ import { buildAllRatings, linesAsResults, scheduleFromResults } from "@/lib/rati
 import { backtest } from "@/lib/backtest";
 import { fetchGameWeather } from "@/lib/providers/gameweather";
 import { fetchOddsApiBooks, oddsApiStatus } from "@/lib/providers/oddsapi";
-import { buildRecommendation, legsFromGames } from "@/lib/sgp";
+import {
+  buildRecommendation,
+  legsFromGames,
+  type GameOpportunities,
+} from "@/lib/sgp";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -133,6 +137,9 @@ export async function GET() {
     const modelVote =
       votes.length > 0 ? votes[Math.floor(votes.length / 2)] : 0;
 
+    // Collected rather than returned in module state, so concurrent requests
+    // on one instance cannot see each other's findings.
+    const opportunities: GameOpportunities[] = [];
     const legs = legsFromGames(
       games,
       enrichedOdds,
@@ -143,13 +150,16 @@ export async function GET() {
       ratings,
       weather,
       modelVote,
+      opportunities,
     );
     if (legs.length === 0) {
       throw new Error(
         "No upcoming games with live odds are posted right now — check back closer to game time.",
       );
     }
-    const recommendation = buildRecommendation(legs, 6, 10, 1, modelVote);
+    const recommendation = buildRecommendation(
+      legs, 6, 10, 1, modelVote, opportunities,
+    );
     // Report the price-feed state so a missing key is visible in the UI
     // rather than silently degrading to one book.
     const feed = oddsApiStatus();

@@ -25,6 +25,12 @@ import {
   type ConsensusSide,
 } from "@/lib/market";
 import {
+  findArbitrage,
+  findMiddles,
+  findStaleBooks,
+  type MarketOpportunities,
+} from "@/lib/arbitrage";
+import {
   distanceKm,
   parkFactor,
   teamCity,
@@ -51,7 +57,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "slip-v15";
+export const MODEL_VERSION = "edge-v16";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -2163,6 +2169,12 @@ export function legsFromGames(
   ratings: Record<string, TeamRating> = {},
   weather: Record<string, GameWeather> = {},
   modelVote: number = MEASURED_MODEL_SKILL,
+  /**
+   * Optional collector for market-vs-itself opportunities. Passed in rather
+   * than stashed in module state, which on a shared serverless instance
+   * could leak one request's findings into another's response.
+   */
+  collect?: GameOpportunities[],
 ): SgpLeg[] {
   const oddsByGame = new Map(odds.map((o) => [o.gameId, o]));
   const legs: SgpLeg[] = [];
@@ -2195,6 +2207,78 @@ export function legsFromGames(
             },
           ],
     );
+
+    /*
+     * Edge that needs no forecast: the market disagreeing with itself.
+     *
+     * Arbitrage is only looked for among books quoting the SAME line —
+     * comparing a -3 against a -6.5 would manufacture a risk-free profit out
+     * of two different bets, which is the single easiest way to produce a
+     * number that looks spectacular and is false.
+     */
+    const books = o.books ?? [];
+    if (books.length >= 2) {
+      const atModalSpread = books.filter(
+        (b) => b.spread === consensus.modalSpread,
+      );
+      const atModalTotal = books.filter(
+        (b) => b.total === consensus.modalTotal,
+      );
+
+      const arbs = [
+        findArbitrage("moneyline", books,
+          { label: `${g.home.abbreviation} ML`, pick: (b) => b.homeMoneyline },
+          { label: `${g.away.abbreviation} ML`, pick: (b) => b.awayMoneyline }),
+        findArbitrage("spread", atModalSpread,
+          { label: `${g.home.abbreviation} ${consensus.modalSpread ?? ""}`, pick: (b) => b.spreadHomeOdds },
+          { label: `${g.away.abbreviation} ${-(consensus.modalSpread ?? 0)}`, pick: (b) => b.spreadAwayOdds }),
+        findArbitrage("total", atModalTotal,
+          { label: `Over ${consensus.modalTotal ?? ""}`, pick: (b) => b.overOdds },
+          { label: `Under ${consensus.modalTotal ?? ""}`, pick: (b) => b.underOdds }),
+      ].filter((a): a is NonNullable<typeof a> => a !== null);
+
+      // Middles need the DIFFERENT lines, priced off the real distribution.
+      const spreadMiddles = findMiddles(
+        "spread", books, gm.marginDist,
+        (b) => (b.spread != null ? -b.spread : undefined),
+        (b) => b.spreadHomeOdds,
+        (b) => b.spreadAwayOdds,
+        {
+          low: (line) => `${g.home.abbreviation} ${line > 0 ? "-" : "+"}${Math.abs(line)}`,
+          high: (line) => `${g.away.abbreviation} ${line > 0 ? "+" : "-"}${Math.abs(line)}`,
+        },
+      );
+      const totalMiddles = gm.totalDist
+        ? findMiddles(
+            "total", books, gm.totalDist,
+            (b) => b.total,
+            (b) => b.overOdds,
+            (b) => b.underOdds,
+            { low: (l) => `Over ${l}`, high: (l) => `Under ${l}` },
+          )
+        : [];
+
+      const found: MarketOpportunities = {
+        arbitrage: arbs,
+        middles: [...spreadMiddles, ...totalMiddles]
+          .sort((a, b) => b.expectedValue - a.expectedValue)
+          .slice(0, 3),
+        stale: findStaleBooks(
+          books,
+          consensus.moneyline.home?.fairProbability ?? null,
+        ),
+      };
+      if (
+        found.arbitrage.length > 0 ||
+        found.middles.length > 0 ||
+        found.stale.length > 0
+      ) {
+        collect?.push({
+          matchup: `${g.away.abbreviation} @ ${g.home.abbreviation}`,
+          ...found,
+        });
+      }
+    }
 
     const lm = LEAGUE_MODEL[g.league];
     const ref = gameLinks[g.id]
@@ -2484,6 +2568,17 @@ export function legsFromGames(
   return legs;
 }
 
+/**
+ * Market-vs-itself edge for one game.
+ *
+ * These describe a GAME's market rather than any single leg, so they are
+ * collected separately instead of being duplicated onto every leg of the
+ * same game.
+ */
+export interface GameOpportunities extends MarketOpportunities {
+  matchup: string;
+}
+
 /* ------------------------------------------------------------------ *
  * 8. Correlation — the honest joint probability of a slip
  * ------------------------------------------------------------------ */
@@ -2691,6 +2786,7 @@ export function buildRecommendation(
   cap = 10,
   maxPerGame = 1,
   modelVote: number = MEASURED_MODEL_SKILL,
+  opportunities: GameOpportunities[] = [],
 ): SgpRecommendation {
   // Drop saturated legs before ranking. They would otherwise rank well — a
   // 99.9% probability against any price looks like enormous edge — while
@@ -2938,6 +3034,7 @@ export function buildRecommendation(
     /** EV is only meaningful when the combined price is actually obtainable. */
     expectedValueIsTheoretical: correlated,
     candidates: ranked,
+    opportunities,
     modelVersion: MODEL_VERSION,
     inputs,
     modelVote: {

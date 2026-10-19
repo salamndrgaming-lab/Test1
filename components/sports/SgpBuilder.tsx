@@ -112,6 +112,89 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
     <div className="space-y-3">
       <DisclaimerBanner />
 
+      {/* Edge that needs no forecast: the market disagreeing with itself. */}
+      {(rec.opportunities ?? []).length > 0 && (
+        <div className="card border-l-4 border-l-green-400">
+          <h3 className="mb-1 font-serif text-lg font-medium text-[var(--text)]">
+            Market inconsistencies
+          </h3>
+          <p className="mb-3 text-xs leading-relaxed text-[var(--muted)]">
+            These don&apos;t depend on out-predicting anyone — they&apos;re
+            places the surveyed books disagree with each other. Limits and
+            speed decide whether they survive contact; a price one book has
+            already pulled isn&apos;t an opportunity.
+          </p>
+          <div className="space-y-3">
+            {(rec.opportunities ?? []).map((o) => (
+              <div key={o.matchup} className="rounded-xl bg-[var(--surface-2)] p-2.5">
+                <p className="mb-1.5 text-xs font-semibold text-[var(--text)]">
+                  {o.matchup}
+                </p>
+
+                {o.arbitrage.map((a, i) => (
+                  <div key={`arb${i}`} className="mb-1.5 text-[0.7rem] leading-relaxed">
+                    <span className="mr-1.5 rounded bg-green-500/15 px-1.5 py-0.5 font-semibold text-green-300">
+                      arbitrage +{(a.guaranteedReturn * 100).toFixed(2)}%
+                    </span>
+                    <span className="text-[var(--muted)]">
+                      {a.sideA.label} {formatOdds(a.sideA.american)} at{" "}
+                      {a.sideA.book} ({(a.stakeShareA * 100).toFixed(0)}% of
+                      stake) + {a.sideB.label}{" "}
+                      {formatOdds(a.sideB.american)} at {a.sideB.book}. Profits
+                      whatever happens, at the same line.
+                    </span>
+                  </div>
+                ))}
+
+                {o.middles.map((m, i) => (
+                  <div key={`mid${i}`} className="mb-1.5 text-[0.7rem] leading-relaxed">
+                    <span
+                      className={classNames(
+                        "mr-1.5 rounded px-1.5 py-0.5 font-semibold",
+                        m.expectedValue > 0
+                          ? "bg-green-500/15 text-green-300"
+                          : "bg-amber-500/15 text-amber-300",
+                      )}
+                    >
+                      middle {m.expectedValue >= 0 ? "+" : ""}
+                      {(m.expectedValue * 100).toFixed(1)}%
+                    </span>
+                    <span className="text-[var(--muted)]">
+                      {m.lowSide.label} at {m.lowSide.book} +{" "}
+                      {m.highSide.label} at {m.highSide.book}. Both win if the{" "}
+                      {m.market === "total" ? "total" : "margin"} lands between{" "}
+                      {m.gapFrom} and {m.gapTo} —{" "}
+                      <span className="font-semibold text-[var(--text)]">
+                        {(m.middleProbability * 100).toFixed(1)}%
+                      </span>{" "}
+                      by our distribution.
+                    </span>
+                  </div>
+                ))}
+
+                {o.stale.length > 0 && (
+                  <p className="text-[0.7rem] leading-relaxed text-[var(--muted-2)]">
+                    <span className="mr-1 rounded bg-[var(--surface)] px-1.5 py-0.5">
+                      stale
+                    </span>
+                    {o.stale
+                      .map(
+                        (st) =>
+                          `${st.book} ${st.minutesBehind}m behind${
+                            Math.abs(st.deviation) > 0.005
+                              ? ` (${st.deviation > 0 ? "+" : ""}${(st.deviation * 100).toFixed(1)}pp off consensus)`
+                              : ""
+                          }`,
+                      )
+                      .join(", ")}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Leg count, with the cost of each extra leg visible while choosing */}
       <div className="card">
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">

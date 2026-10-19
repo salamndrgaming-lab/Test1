@@ -478,6 +478,17 @@ export interface PlatformSlip {
   expectedValue: number;
   /** Expected value per $1 at each length 1..legs.length. */
   evByLength: number[];
+  /**
+   * The length that maximises expected value at this book, and what it pays.
+   *
+   * Usually 1, because expected value falls with every leg a book charges vig
+   * on. It is 1 only when every leg is priced below fair value — where a book
+   * genuinely offers legs above fair value, compounding them raises expected
+   * value and this lands higher. Reported so "the best play at this book" is
+   * a measured answer rather than whatever length happened to be selected.
+   */
+  bestLength: number;
+  bestExpectedValue: number;
   /** Legs priced better than consensus fair value at this book. */
   valueLegs: number;
   /** Of those, how many clear MIN_EDGE_SIGNIFICANCE rather than sitting in noise. */

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { SgpRecommendation } from "@/types";
+import type { PlatformSlip, SgpRecommendation } from "@/types";
 import { PickCard } from "./PickCard";
 import { DisclaimerBanner } from "@/components/layout/DisclaimerBanner";
 import { calculatePayout } from "@/lib/sgp";
@@ -25,10 +25,26 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
    * unchanged: the leg-count selector, the payout and the cards all read the
    * pool.
    */
-  const platforms = rec.platforms ?? [];
+  // Memoised so the `?? []` fallback doesn't produce a fresh array identity
+  // on every render and re-run everything downstream of it.
+  const allPlatforms = useMemo(() => rec.platforms ?? [], [rec.platforms]);
   const [platform, setPlatform] = useState<string | null>(null);
+
+  /*
+   * How to rank the books, and whether to hide the ones you can't use.
+   *
+   * "EV at this length" is the default because it answers the actual question
+   * — which book pays best for the slip I am building. The others matter for
+   * different questions: mean edge is length-independent so it is the cleaner
+   * read on pure price quality, coverage finds the book that can take the
+   * whole slate, and best play finds the single best bet available anywhere.
+   */
+  const [sortBy, setSortBy] = useState<
+    "ev" | "edge" | "coverage" | "best"
+  >("ev");
+  const [onlyUsable, setOnlyUsable] = useState(false);
   const activePlatform = platform
-    ? platforms.find((p) => p.book === platform)
+    ? allPlatforms.find((p) => p.book === platform)
     : undefined;
 
   const shoppedPool = rec.candidates.length > 0 ? rec.candidates : rec.legs;
@@ -37,6 +53,38 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
   const [legCount, setLegCount] = useState(
     Math.min(rec.legs.length || 1, Math.min(10, shoppedPool.length)),
   );
+
+  /**
+   * A book's expected value at the length currently being built.
+   *
+   * Clamped to what the book actually offers rather than extrapolated: a book
+   * quoting four legs has no eight-leg price, and inventing one would be the
+   * same mistake as falling back to a better book's number.
+   */
+  const evAtLength = useCallback(
+    (p: PlatformSlip, n: number) =>
+      p.evByLength[Math.min(n, p.evByLength.length) - 1] ?? 0,
+    [],
+  );
+
+  const platforms = useMemo(() => {
+    const rows = onlyUsable
+      ? allPlatforms.filter((p) => p.legs.length >= legCount)
+      : allPlatforms;
+    const key = (p: PlatformSlip) => {
+      switch (sortBy) {
+        case "edge":
+          return p.meanLegEdge;
+        case "coverage":
+          return p.gamesAvailable;
+        case "best":
+          return p.bestExpectedValue;
+        default:
+          return evAtLength(p, legCount);
+      }
+    };
+    return [...rows].sort((a, b) => key(b) - key(a));
+  }, [allPlatforms, onlyUsable, sortBy, legCount, evAtLength]);
 
   // One leg per game, so the combined price's independence assumption holds.
   const slipFor = useCallback((n: number) => {
@@ -256,12 +304,14 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
       )}
 
       {/* Which sportsbook the slip has to be placeable at */}
-      {platforms.length > 1 && (
+      {allPlatforms.length > 1 && (
         <div className="card">
           <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
             <h3 className="font-semibold">Which sportsbook?</h3>
             <span className="text-[0.7rem] text-[var(--muted-2)]">
-              {platforms.length} surveyed
+              {platforms.length === allPlatforms.length
+                ? `${allPlatforms.length} surveyed`
+                : `${platforms.length} of ${allPlatforms.length} shown`}
             </span>
           </div>
           <p className="mb-2 text-[0.7rem] leading-relaxed text-[var(--muted-2)]">
@@ -272,6 +322,44 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
             rebuilt from only the legs that book quotes, at its own prices.
             Expect less value; the gap is the cost of having one account.
           </p>
+
+          {/* Sort and filter — the question "which book?" has several forms */}
+          <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[0.65rem]">
+            <span className="text-[var(--muted-2)]">Rank by</span>
+            {(
+              [
+                ["ev", `EV at ${legCount} leg${legCount === 1 ? "" : "s"}`],
+                ["edge", "price quality"],
+                ["best", "best play here"],
+                ["coverage", "games covered"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setSortBy(key)}
+                className={classNames(
+                  "rounded-full border px-2 py-0.5 transition-colors",
+                  sortBy === key
+                    ? "border-sky-400 bg-sky-400/10 text-sky-200"
+                    : "border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)]/50",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+            <button
+              onClick={() => setOnlyUsable((v) => !v)}
+              className={classNames(
+                "rounded-full border px-2 py-0.5 transition-colors",
+                onlyUsable
+                  ? "border-sky-400 bg-sky-400/10 text-sky-200"
+                  : "border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)]/50",
+              )}
+              title="Hide books that cannot fill the slip at the current length"
+            >
+              {onlyUsable ? "✓ " : ""}can take all {legCount}
+            </button>
+          </div>
 
           <div className="no-scrollbar -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
             <button
@@ -292,7 +380,7 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
               </span>
             </button>
             {platforms.map((p) => {
-              const ev = p.evByLength[Math.min(legCount, p.evByLength.length) - 1] ?? 0;
+              const ev = evAtLength(p, legCount);
               return (
                 <button
                   key={p.book}
@@ -332,9 +420,12 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
             <thead>
               <tr className="text-[0.6rem] uppercase tracking-wide text-[var(--muted-2)]">
                 <th className="pb-1 text-left font-medium">Book</th>
-                <th className="pb-1 text-right font-medium">Legs</th>
+                <th className="pb-1 text-right font-medium">
+                  EV @{legCount}
+                </th>
+                <th className="pb-1 text-right font-medium">Best play</th>
                 <th className="pb-1 text-right font-medium">Mean edge</th>
-                <th className="pb-1 text-right font-medium">Value legs</th>
+                <th className="pb-1 text-right font-medium">Value</th>
                 <th className="pb-1 text-right font-medium">Shaky</th>
               </tr>
             </thead>
@@ -358,8 +449,42 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
                       {p.gamesAvailable} game{p.gamesAvailable === 1 ? "" : "s"}
                     </span>
                   </td>
+                  <td
+                    className={classNames(
+                      "py-1 text-right tabular-nums",
+                      p.legs.length < legCount
+                        ? "text-[var(--muted-2)]"
+                        : evAtLength(p, legCount) >= 0
+                          ? "text-good"
+                          : "text-[var(--muted)]",
+                    )}
+                    title={
+                      p.legs.length < legCount
+                        ? `Only offers ${p.legs.length} of the ${legCount} legs`
+                        : undefined
+                    }
+                  >
+                    {evAtLength(p, legCount) >= 0 ? "+" : ""}
+                    {(evAtLength(p, legCount) * 100).toFixed(1)}%
+                    {p.legs.length < legCount && (
+                      <span className="text-[0.6rem]"> @{p.legs.length}</span>
+                    )}
+                  </td>
                   <td className="py-1 text-right tabular-nums">
-                    {p.legs.length}
+                    <span
+                      className={
+                        p.bestExpectedValue >= 0
+                          ? "text-good"
+                          : "text-[var(--muted)]"
+                      }
+                    >
+                      {p.bestExpectedValue >= 0 ? "+" : ""}
+                      {(p.bestExpectedValue * 100).toFixed(1)}%
+                    </span>
+                    <span className="text-[0.6rem] text-[var(--muted-2)]">
+                      {" "}
+                      @{p.bestLength}
+                    </span>
                   </td>
                   <td
                     className={classNames(
@@ -389,13 +514,19 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
             </tbody>
           </table>
           <p className="mt-1.5 text-[0.6rem] leading-relaxed text-[var(--muted-2)]">
-            Mean edge is the average gap between each leg&apos;s price at this
-            book and the consensus fair value across all of them — so a book
-            ranks well here because its numbers beat fair value, never because
-            the benchmark was recomputed from its own prices. Value legs counts
-            those priced above fair value, and the first figure is how many of
-            those clear the books&apos; own disagreement rather than sitting
-            inside it.
+            <strong>EV @{legCount}</strong> is this book&apos;s expected value
+            at the length you&apos;re building, clamped to what it actually
+            offers rather than extrapolated. <strong>Best play</strong> is the
+            length that pays best <em>at that book</em> — almost always 1,
+            because every extra leg pays its margin again, and higher only
+            where it genuinely prices legs above fair value.{" "}
+            <strong>Mean edge</strong> is the average gap between each
+            leg&apos;s price here and the consensus fair value across all
+            books, so a book ranks well because its numbers beat fair value,
+            never because the benchmark was recomputed from its own prices.{" "}
+            <strong>Value</strong> counts legs priced above fair value, with
+            the first figure being how many clear the books&apos; own
+            disagreement rather than sitting inside it.
           </p>
         </div>
       )}

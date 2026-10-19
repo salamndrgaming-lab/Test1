@@ -59,7 +59,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "platform-v18";
+export const MODEL_VERSION = "platform-v18.1";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -2900,6 +2900,17 @@ export function buildPlatformSlips(
     const meanGap =
       gaps.length > 0 ? gaps.reduce((a, b) => a + b, 0) / gaps.length : 0;
 
+    // The length that actually pays best at this book, measured rather than
+    // assumed to be the longest or the shortest.
+    let bestLength = 1;
+    let bestEv = evByLength[0] ?? 0;
+    evByLength.forEach((v, i) => {
+      if (v > bestEv) {
+        bestEv = v;
+        bestLength = i + 1;
+      }
+    });
+
     slips.push({
       book,
       legsAvailable: available.length,
@@ -2911,6 +2922,8 @@ export function buildPlatformSlips(
       impliedProbability: payout.impliedProbability,
       expectedValue: payout.expectedValue,
       evByLength,
+      bestLength,
+      bestExpectedValue: bestEv,
       valueLegs: legs.filter((l) => l.edge > 0).length,
       significantValueLegs: legs.filter(
         (l) => l.edge > 0 && (l.edgeSignificance ?? 0) >= MIN_EDGE_SIGNIFICANCE,
@@ -2981,21 +2994,37 @@ export function buildRecommendation(
   const perGame = new Map<string, number>();
   const legs: SgpLeg[] = [];
 
-  // Pass 1 — one leg per game, so the independence behind the combined price
-  // actually holds. Take as many as we can up to the cap.
+  /*
+   * Pass 1 — one leg per game, so the independence behind the combined price
+   * actually holds.
+   *
+   * Stops at the DEFAULT length, not at the cap. It used to fill to the cap,
+   * which meant `minLegs` only ever padded a short slate and the default slip
+   * was always ten legs — so lowering the default from 6 to 3 changed
+   * nothing, because neither number was ever reached. The whole ranked pool
+   * still goes out as `candidates`, so the user can extend to the cap from
+   * the selector; this only decides where the slip starts.
+   */
+  const defaultLength = Math.max(1, Math.min(minLegs, cap));
   for (const leg of ranked) {
-    if (legs.length >= cap) break;
+    if (legs.length >= defaultLength) break;
     const used = perGame.get(leg.gameId) ?? 0;
     if (used >= maxPerGame) continue;
     perGame.set(leg.gameId, used + 1);
     legs.push(leg);
   }
 
-  // Pass 2 — only to reach the minimum slip length when there simply aren't
-  // enough games. Stop at minLegs rather than padding with correlated legs.
+  /*
+   * Pass 2 — only to reach the default length when there simply aren't enough
+   * games. Stops there rather than padding further with correlated legs.
+   *
+   * Bounded by the same clamped length as pass 1, because this loop used to
+   * test `minLegs` directly and so ignored the cap: asking for 20 legs with a
+   * cap of 10 produced a 20-leg slip padded with same-game legs.
+   */
   const taken = new Set(legs.map((l) => l.id));
   for (const leg of ranked) {
-    if (legs.length >= minLegs) break;
+    if (legs.length >= defaultLength) break;
     if (taken.has(leg.id)) continue;
     taken.add(leg.id);
     legs.push(leg);

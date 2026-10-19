@@ -43,6 +43,32 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
     "ev" | "edge" | "coverage" | "best"
   >("ev");
   const [onlyUsable, setOnlyUsable] = useState(false);
+
+  /*
+   * Which sub-screen of the tool is showing.
+   *
+   * "build" is the slip you are assembling. "compare" is every book's version
+   * of the same slip side by side — the question "which platform should I put
+   * this on" answered on one screen, instead of by clicking into each book
+   * and remembering what the last one said.
+   */
+  const [view, setView] = useState<"build" | "compare">("build");
+
+  const oppCounts = useMemo(() => {
+    const os = rec.opportunities ?? [];
+    return {
+      arbitrage: os.reduce((n, o) => n + o.arbitrage.length, 0),
+      middles: os.reduce((n, o) => n + o.middles.length, 0),
+      stale: os.reduce((n, o) => n + o.stale.length, 0),
+    };
+  }, [rec.opportunities]);
+  /*
+   * Collapsed by default, EXCEPT when there is a genuine arbitrage in there.
+   * A risk-free pair is the one finding in this app that is worth money
+   * without any forecast being right, and hiding it behind a tap by default
+   * would be burying the best thing the tool found.
+   */
+  const [oppsOpen, setOppsOpen] = useState(oppCounts.arbitrage > 0);
   const activePlatform = platform
     ? allPlatforms.find((p) => p.book === platform)
     : undefined;
@@ -67,6 +93,34 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
     [],
   );
 
+  /**
+   * The book's best play, derived from its own EV curve when the field is
+   * absent.
+   *
+   * A cached response from before these fields existed rendered "NaN% @ legs"
+   * on screen. The curve is already present and the best play is just its
+   * argmax, so recomputing costs nothing and removes a class of failure where
+   * stale data produces a number that is not a number.
+   */
+  const bestPlay = useCallback((p: PlatformSlip) => {
+    if (
+      typeof p.bestLength === "number" &&
+      typeof p.bestExpectedValue === "number" &&
+      Number.isFinite(p.bestExpectedValue)
+    ) {
+      return { length: p.bestLength, ev: p.bestExpectedValue };
+    }
+    let length = 1;
+    let ev = p.evByLength[0] ?? 0;
+    p.evByLength.forEach((v, i) => {
+      if (v > ev) {
+        ev = v;
+        length = i + 1;
+      }
+    });
+    return { length, ev };
+  }, []);
+
   const platforms = useMemo(() => {
     const rows = onlyUsable
       ? allPlatforms.filter((p) => p.legs.length >= legCount)
@@ -78,13 +132,13 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
         case "coverage":
           return p.gamesAvailable;
         case "best":
-          return p.bestExpectedValue;
+          return bestPlay(p).ev;
         default:
           return evAtLength(p, legCount);
       }
     };
     return [...rows].sort((a, b) => key(b) - key(a));
-  }, [allPlatforms, onlyUsable, sortBy, legCount, evAtLength]);
+  }, [allPlatforms, onlyUsable, sortBy, legCount, evAtLength, bestPlay]);
 
   // One leg per game, so the combined price's independence assumption holds.
   const slipFor = useCallback((n: number) => {
@@ -197,6 +251,51 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
       return next;
     });
 
+  /*
+   * Shared by both sub-screens, because the question they answer is the same
+   * one: which book, ranked how. Defined once rather than duplicated so the
+   * two screens cannot drift apart.
+   */
+  // Sort and filter — the question "which book?" has several forms.
+  const sortControls = (
+      <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[0.65rem]">
+        <span className="text-[var(--muted-2)]">Rank by</span>
+        {(
+          [
+            ["ev", `EV at ${legCount} leg${legCount === 1 ? "" : "s"}`],
+            ["edge", "price quality"],
+            ["best", "best play here"],
+            ["coverage", "games covered"],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setSortBy(key)}
+            className={classNames(
+              "rounded-full border px-2 py-0.5 transition-colors",
+              sortBy === key
+                ? "border-sky-400 bg-sky-400/10 text-sky-200"
+                : "border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)]/50",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+        <button
+          onClick={() => setOnlyUsable((v) => !v)}
+          className={classNames(
+            "rounded-full border px-2 py-0.5 transition-colors",
+            onlyUsable
+              ? "border-sky-400 bg-sky-400/10 text-sky-200"
+              : "border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)]/50",
+          )}
+          title="Hide books that cannot fill the slip at the current length"
+        >
+          {onlyUsable ? "✓ " : ""}can take all {legCount}
+        </button>
+      </div>
+  );
+
   if (!acknowledged) {
     return (
       <div className="card space-y-3">
@@ -223,10 +322,46 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
       {/* Edge that needs no forecast: the market disagreeing with itself. */}
       {(rec.opportunities ?? []).length > 0 && (
         <div className="card border-l-4 border-l-green-400">
-          <h3 className="mb-1 font-serif text-lg font-medium text-[var(--text)]">
-            Market inconsistencies
-          </h3>
-          <p className="mb-3 text-xs leading-relaxed text-[var(--muted)]">
+          <button
+            onClick={() => setOppsOpen((v) => !v)}
+            className="flex w-full items-center justify-between gap-2 text-left"
+            aria-expanded={oppsOpen}
+          >
+            <h3 className="font-serif text-lg font-medium text-[var(--text)]">
+              Market inconsistencies
+            </h3>
+            <span className="flex shrink-0 items-center gap-1.5 text-[0.65rem] text-[var(--muted)]">
+              {oppCounts.arbitrage > 0 && (
+                <span className="rounded bg-green-500/15 px-1.5 py-0.5 font-semibold text-green-300">
+                  {oppCounts.arbitrage} arb
+                </span>
+              )}
+              {oppCounts.middles > 0 && (
+                <span className="rounded bg-[var(--surface-2)] px-1.5 py-0.5">
+                  {oppCounts.middles} middle
+                  {oppCounts.middles === 1 ? "" : "s"}
+                </span>
+              )}
+              {oppCounts.stale > 0 && (
+                <span className="rounded bg-[var(--surface-2)] px-1.5 py-0.5">
+                  {oppCounts.stale} stale
+                </span>
+              )}
+              <span className="text-[var(--muted-2)]">
+                {oppsOpen ? "▾" : "▸"}
+              </span>
+            </span>
+          </button>
+          {!oppsOpen && (
+            <p className="mt-1 text-[0.65rem] text-[var(--muted-2)]">
+              {oppCounts.arbitrage > 0
+                ? "Includes a risk-free pair — worth opening."
+                : "Tap to see where the surveyed books disagree."}
+            </p>
+          )}
+          {oppsOpen && (
+            <>
+          <p className="mb-3 mt-1 text-xs leading-relaxed text-[var(--muted)]">
             These don&apos;t depend on out-predicting anyone — they&apos;re
             places the surveyed books disagree with each other. Limits and
             speed decide whether they survive contact; a price one book has
@@ -300,11 +435,38 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
               </div>
             ))}
           </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Sub-screens: build one slip, or compare every book's version of it */}
+      {allPlatforms.length > 1 && (
+        <div className="flex gap-1.5 text-xs">
+          {(
+            [
+              ["build", "Build slip"],
+              ["compare", `Compare books (${allPlatforms.length})`],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setView(key)}
+              className={classNames(
+                "flex-1 rounded-xl border px-3 py-2 font-semibold transition-colors",
+                view === key
+                  ? "border-sky-400 bg-sky-400/10 text-sky-200"
+                  : "border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)]/50",
+              )}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       )}
 
       {/* Which sportsbook the slip has to be placeable at */}
-      {allPlatforms.length > 1 && (
+      {view === "build" && allPlatforms.length > 1 && (
         <div className="card">
           <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
             <h3 className="font-semibold">Which sportsbook?</h3>
@@ -323,43 +485,7 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
             Expect less value; the gap is the cost of having one account.
           </p>
 
-          {/* Sort and filter — the question "which book?" has several forms */}
-          <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[0.65rem]">
-            <span className="text-[var(--muted-2)]">Rank by</span>
-            {(
-              [
-                ["ev", `EV at ${legCount} leg${legCount === 1 ? "" : "s"}`],
-                ["edge", "price quality"],
-                ["best", "best play here"],
-                ["coverage", "games covered"],
-              ] as const
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setSortBy(key)}
-                className={classNames(
-                  "rounded-full border px-2 py-0.5 transition-colors",
-                  sortBy === key
-                    ? "border-sky-400 bg-sky-400/10 text-sky-200"
-                    : "border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)]/50",
-                )}
-              >
-                {label}
-              </button>
-            ))}
-            <button
-              onClick={() => setOnlyUsable((v) => !v)}
-              className={classNames(
-                "rounded-full border px-2 py-0.5 transition-colors",
-                onlyUsable
-                  ? "border-sky-400 bg-sky-400/10 text-sky-200"
-                  : "border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)]/50",
-              )}
-              title="Hide books that cannot fill the slip at the current length"
-            >
-              {onlyUsable ? "✓ " : ""}can take all {legCount}
-            </button>
-          </div>
+          {sortControls}
 
           <div className="no-scrollbar -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
             <button
@@ -473,17 +599,17 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
                   <td className="py-1 text-right tabular-nums">
                     <span
                       className={
-                        p.bestExpectedValue >= 0
+                        bestPlay(p).ev >= 0
                           ? "text-good"
                           : "text-[var(--muted)]"
                       }
                     >
-                      {p.bestExpectedValue >= 0 ? "+" : ""}
-                      {(p.bestExpectedValue * 100).toFixed(1)}%
+                      {bestPlay(p).ev >= 0 ? "+" : ""}
+                      {(bestPlay(p).ev * 100).toFixed(1)}%
                     </span>
                     <span className="text-[0.6rem] text-[var(--muted-2)]">
                       {" "}
-                      @{p.bestLength}
+                      @{bestPlay(p).length}
                     </span>
                   </td>
                   <td
@@ -582,6 +708,195 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
         </p>
       </div>
 
+      {view === "compare" && (
+        <div className="card">
+          <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="font-semibold">
+              Best {legCount}-leg play at each book
+            </h3>
+            <span className="text-[0.7rem] text-[var(--muted-2)]">
+              {platforms.length === allPlatforms.length
+                ? `${allPlatforms.length} books`
+                : `${platforms.length} of ${allPlatforms.length}`}
+            </span>
+          </div>
+          <p className="mb-2 text-[0.7rem] leading-relaxed text-[var(--muted-2)]">
+            The same slate, rebuilt independently at every sportsbook from
+            only the legs that book quotes, at its own prices. The picks differ
+            between books because the prices do — the best value at one book is
+            a different bet from the best value at another. Edge is measured
+            against the consensus fair value across all of them, so a book
+            ranks high because its numbers beat fair value rather than because
+            the benchmark came from its own prices.
+          </p>
+          {sortControls}
+
+          {platforms.length === 0 ? (
+            <p className="rounded-lg bg-[var(--surface-2)] p-3 text-xs text-[var(--muted)]">
+              No book quotes all {legCount} legs. Drop the length, or turn off
+              &ldquo;can take all {legCount}&rdquo;.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {platforms.map((p, rank) => {
+                const n = Math.min(legCount, p.legs.length);
+                const slip = p.legs.slice(0, n);
+                const pay = calculatePayout(stake, slip);
+                const short = p.legs.length < legCount;
+                return (
+                  <div
+                    key={p.book}
+                    className={classNames(
+                      "rounded-xl border p-2.5",
+                      rank === 0
+                        ? "border-sky-400/60 bg-sky-400/5"
+                        : "border-[var(--border)]",
+                    )}
+                  >
+                    <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+                      <p className="text-sm font-semibold">
+                        <span className="mr-1.5 text-[var(--muted-2)]">
+                          {rank + 1}.
+                        </span>
+                        {p.book}
+                        {rank === 0 && (
+                          <span className="ml-1.5 rounded bg-sky-400/15 px-1.5 py-0.5 text-[0.6rem] font-semibold text-sky-200">
+                            best here
+                          </span>
+                        )}
+                        {p.bestOnEveryLeg && (
+                          <span className="ml-1.5 rounded bg-green-500/15 px-1.5 py-0.5 text-[0.6rem] font-semibold text-green-300">
+                            best price on every leg
+                          </span>
+                        )}
+                      </p>
+                      <button
+                        onClick={() => {
+                          choosePlatform(p.book);
+                          setView("build");
+                        }}
+                        className="rounded-lg border border-[var(--border)] px-2 py-0.5 text-[0.65rem] font-semibold hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                      >
+                        Build this →
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-[0.7rem] sm:grid-cols-4">
+                      <div>
+                        <p className="text-[var(--muted-2)]">
+                          {n}-leg price
+                        </p>
+                        <p className="font-semibold tabular-nums">
+                          {formatOdds(pay.americanOdds)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[var(--muted-2)]">Win chance</p>
+                        <p className="font-semibold tabular-nums">
+                          {formatPct(pay.fairProbability)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[var(--muted-2)]">
+                          EV on {formatMoney(stake)}
+                        </p>
+                        <p
+                          className={classNames(
+                            "font-semibold tabular-nums",
+                            pay.expectedValue >= 0 ? "text-good" : "text-bad",
+                          )}
+                        >
+                          {pay.expectedValue >= 0 ? "+" : ""}
+                          {formatMoney(pay.expectedValue)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[var(--muted-2)]">Best play here</p>
+                        <p className="font-semibold tabular-nums">
+                          {bestPlay(p).ev >= 0 ? "+" : ""}
+                          {(bestPlay(p).ev * 100).toFixed(1)}%
+                          <span className="ml-1 text-[0.6rem] font-normal text-[var(--muted-2)]">
+                            @{bestPlay(p).length} leg
+                            {bestPlay(p).length === 1 ? "" : "s"}
+                          </span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <ol className="mt-1.5 space-y-0.5 text-[0.68rem]">
+                      {slip.map((l) => (
+                        <li key={l.id} className="flex justify-between gap-2">
+                          <span className="truncate text-[var(--muted)]">
+                            {l.selection}
+                            <span className="ml-1 text-[var(--muted-2)]">
+                              {l.matchup}
+                            </span>
+                          </span>
+                          <span className="shrink-0 tabular-nums">
+                            {formatOdds(l.americanOdds)}
+                            <span
+                              className={classNames(
+                                "ml-1",
+                                l.edge > 0 ? "text-good" : "text-[var(--muted-2)]",
+                              )}
+                            >
+                              {l.edge > 0 ? "+" : ""}
+                              {(l.edge * 100).toFixed(1)}pp
+                            </span>
+                          </span>
+                        </li>
+                      ))}
+                    </ol>
+
+                    <p className="mt-1.5 flex flex-wrap gap-1.5 text-[0.6rem]">
+                      <span className="rounded bg-[var(--surface-2)] px-1.5 py-0.5 text-[var(--muted)]">
+                        {p.gamesAvailable} games quoted
+                      </span>
+                      <span
+                        className={classNames(
+                          "rounded px-1.5 py-0.5",
+                          p.significantValueLegs > 0
+                            ? "bg-green-500/10 text-green-300"
+                            : "bg-[var(--surface-2)] text-[var(--muted)]",
+                        )}
+                      >
+                        {p.significantValueLegs}/{p.valueLegs} value legs clear
+                        noise
+                      </span>
+                      <span
+                        className={classNames(
+                          "rounded px-1.5 py-0.5",
+                          p.shakyLegs > 0
+                            ? "bg-red-500/10 text-red-300"
+                            : "bg-green-500/10 text-green-300",
+                        )}
+                      >
+                        {p.shakyLegs === 0
+                          ? "no shaky legs"
+                          : `${p.shakyLegs} shaky`}
+                      </span>
+                      {short && (
+                        <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-300">
+                          only offers {p.legs.length} of {legCount}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <p className="mt-2 text-[0.6rem] leading-relaxed text-[var(--muted-2)]">
+            Every one of these is worse than the shop-everywhere slip on the
+            Build tab, which is not placeable at a single book. That difference
+            is the cost of having one account, and it is real rather than
+            presentational. Illustrative math on listed odds, not an offer.
+          </p>
+        </div>
+      )}
+
+      {view === "build" && (
+      <>
       {/* Sticky payout summary */}
       <div className="sticky top-2 z-10 rounded-2xl border border-sky-400/40 bg-[var(--surface-2)] p-4 shadow-lg md:top-16">
         <div className="flex flex-wrap items-end justify-between gap-3">
@@ -878,8 +1193,13 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
         </div>
       )}
 
+      {/*
+        * The cards follow the ACTIVE platform. They used to render rec.legs,
+        * which is the fixed shop-everywhere slip — so picking a book changed
+        * the payout while the cards below still showed other books' prices.
+        */}
       <div className="grid gap-3">
-        {rec.legs.map((leg) => (
+        {slipFor(maxLegs).map((leg) => (
           <PickCard
             key={leg.id}
             leg={leg}
@@ -888,6 +1208,8 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
           />
         ))}
       </div>
+      </>
+      )}
     </div>
   );
 }

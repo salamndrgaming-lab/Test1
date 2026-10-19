@@ -47,7 +47,55 @@ const REGIONS = "us";
  * stale-by-minutes price across every book shifts the consensus barely at all,
  * while a per-request fetch would spend the month's entire allowance in a day.
  */
-export const CACHE_TTL_MS = 5 * 60 * 1000;
+export const CACHE_TTL_MS = 20 * 60 * 1000;
+
+/**
+ * How long a slate is reused, as a function of how soon it starts.
+ *
+ * A fixed TTL is the wrong shape on both ends. Hours before kickoff, lines
+ * barely move and a short cache spends the month's allowance on nothing. In
+ * the final hour they move constantly, and a stale consensus is exactly when
+ * price shopping fails — we would report an edge that has already gone.
+ *
+ * So spend the budget where freshness is worth something. The morning before
+ * a slate costs almost nothing; the hour before first pitch gets the fresh
+ * data the feature actually depends on.
+ */
+export const ADAPTIVE_TTL: { withinHours: number; ttlMinutes: number }[] = [
+  { withinHours: 2, ttlMinutes: 8 },
+  { withinHours: 6, ttlMinutes: 30 },
+  { withinHours: 24, ttlMinutes: 90 },
+  { withinHours: Infinity, ttlMinutes: 240 },
+];
+
+/** TTL for a league whose next game starts in `hoursToFirstGame`. */
+export function ttlMsFor(hoursToFirstGame: number | null): number {
+  if (hoursToFirstGame == null || !Number.isFinite(hoursToFirstGame)) {
+    return CACHE_TTL_MS;
+  }
+  // Already underway or imminent: the shortest window.
+  const h = Math.max(0, hoursToFirstGame);
+  for (const band of ADAPTIVE_TTL) {
+    if (h <= band.withinHours) return band.ttlMinutes * 60 * 1000;
+  }
+  return CACHE_TTL_MS;
+}
+
+/**
+ * Keep enough credits to cover the rest of the month at this minimum daily
+ * rate, so a heavy afternoon cannot strand the following three weeks.
+ *
+ * At 3 credits per league per fetch, 12 credits a day is roughly two leagues
+ * refreshed twice — enough to keep the tool usable every day of the month
+ * rather than excellent for a week and dead afterwards.
+ */
+export const DAILY_FLOOR_CREDITS = 12;
+
+/** Days left in the current month, including today. */
+function daysLeftInMonth(now = new Date()): number {
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  return Math.max(1, end - now.getDate() + 1);
+}
 
 /** Leave headroom so the allowance can't be fully drained by this feature. */
 export const MIN_REMAINING_CREDITS = 25;
@@ -252,17 +300,29 @@ async function fetchLeague(
   league: League,
   apiKey: string,
   signal: AbortSignal,
+  hoursToFirstGame: number | null,
 ): Promise<OddsApiEvent[]> {
+  const ttl = ttlMsFor(hoursToFirstGame);
   const cached = cache.get(league);
-  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.events;
+  if (cached && Date.now() - cached.at < ttl) return cached.events;
 
-  // Stop before the allowance is gone, so this feature can never strand the
-  // rest of the month.
-  if (
-    remainingCredits != null &&
-    remainingCredits < MIN_REMAINING_CREDITS
-  ) {
-    return cached?.events ?? [];
+  /*
+   * Two guards, both from the API's own accounting.
+   *
+   * The hard floor stops the allowance being drained to zero. The pacing
+   * reserve is the more useful one: it keeps back enough to cover every
+   * remaining day of the month at a minimum daily rate, so the tool stays
+   * usable all month instead of being excellent for a week and dead for the
+   * next three.
+   */
+  if (remainingCredits != null) {
+    const paceReserve = daysLeftInMonth() * DAILY_FLOOR_CREDITS;
+    if (
+      remainingCredits < MIN_REMAINING_CREDITS ||
+      remainingCredits < paceReserve
+    ) {
+      return cached?.events ?? [];
+    }
   }
 
   const sport = SPORT_KEYS[league];
@@ -273,7 +333,24 @@ async function fetchLeague(
     `&regions=${REGIONS}&markets=${MARKETS}` +
     `&oddsFormat=american&dateFormat=iso`;
 
-  const res = await fetch(url, { signal, cache: "no-store" });
+  /*
+   * Two cache layers, because the in-process one alone was close to useless.
+   *
+   * The Map above lives in a single serverless instance's memory. On Vercel a
+   * cold start begins with it empty, and on low traffic cold starts are
+   * common — so with `cache: "no-store"` a large share of page loads paid full
+   * price regardless of the TTL. Measured against the budget, that was the
+   * difference between the allowance lasting a week and lasting two days.
+   *
+   * `next.revalidate` uses the platform's Data Cache, which is SHARED across
+   * instances and survives deployments, so a fetch one visitor paid for
+   * serves everyone else inside the window. The in-process Map stays as a
+   * cheap first-level hit for a warm instance.
+   */
+  const res = await fetch(url, {
+    signal,
+    next: { revalidate: Math.floor(ttl / 1000) },
+  });
   // The API reports the allowance in headers; read them so the ceiling above
   // is based on its accounting rather than our guess at it.
   const rem = Number(res.headers.get("x-requests-remaining"));
@@ -312,10 +389,21 @@ export async function fetchOddsApiBooks(
   );
   if (leagues.length === 0) return {};
 
+  // How soon does each league's next game start? That sets how fresh its
+  // prices need to be, and therefore how much of the budget it deserves.
+  const hoursToFirst = (league: League): number | null => {
+    const starts = games
+      .filter((g) => g.league === league)
+      .map((g) => Date.parse(g.startTime))
+      .filter((t) => Number.isFinite(t));
+    if (starts.length === 0) return null;
+    return (Math.min(...starts) - Date.now()) / 3_600_000;
+  };
+
   const settled = await Promise.allSettled(
     leagues.map(async (league) => ({
       league,
-      events: await fetchLeague(league, apiKey, signal),
+      events: await fetchLeague(league, apiKey, signal, hoursToFirst(league)),
     })),
   );
 

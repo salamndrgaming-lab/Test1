@@ -18,10 +18,27 @@ six-leg slip once the hold compounds. No modelling change moves it.
    read more than 1.
 
 Quota notes: a credit is markets × regions per request. We request three
-markets in one region, so each league costs 3 credits. One request per league
-(not per game), each slate cached 5 minutes, and fetching stops with 25
-credits left so a traffic spike cannot strand the month. On a typical two-sport
-day that is roughly 6 credits per 5-minute window of actual use.
+markets in one region, so each league costs 3 credits, and we make one request
+per league rather than per game.
+
+Freshness is bought where it is worth something. The cache window scales with
+how soon the slate starts — 8 minutes inside the final two hours, 30 minutes a
+few hours out, 90 minutes for tomorrow, 4 hours beyond that. A stale line
+matters enormously an hour before kickoff, when shopping actually works, and
+not at all the morning before. Worst case at two leagues: ~2 days of
+continuous refreshing right before kickoff, ~7 days watching a few hours out,
+~20 days checking tomorrow's card.
+
+Two guards stop it running dry. A hard floor at 25 credits, and a pacing
+reserve that holds back `daysLeftInMonth × 12` credits — so the feed keeps
+working every day of the month rather than being excellent for a week and dead
+for the next three. When either binds, the last cached slate is served and the
+UI reports it.
+
+The cache uses the platform Data Cache (shared across serverless instances),
+not just process memory. That distinction matters: with in-memory caching
+alone, every cold start paid full price, which on low traffic was the
+difference between the allowance lasting a week and lasting two days.
 
 If you outgrow the free tier, the same provider's paid tiers and
 odds-api.io / OddsPapi are drop-in alternatives — only `lib/providers/oddsapi.ts`

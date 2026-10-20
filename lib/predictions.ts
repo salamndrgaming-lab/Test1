@@ -269,12 +269,23 @@ export interface ScoreCard {
   bins: CalibrationBin[];
   /** Brier needs real volume before it means anything. */
   meaningful: boolean;
+  /**
+   * Median absolute gap between the probability we published and the
+   * consensus, across the settled picks, in probability.
+   *
+   * This answers a question the win-loss record cannot: WHOSE forecast is
+   * being graded. While the model's vote is gated at zero the published
+   * probability is the consensus plus a distribution-shape correction, so a
+   * record built on it is mostly the market's record, not ours. When this is
+   * near zero, a hot or cold streak says nothing about the model either way.
+   */
+  medianLean: number;
 }
 
 const EMPTY: ScoreCard = {
   graded: 0, wins: 0, losses: 0, pushes: 0,
   brierModel: 0, brierMarket: 0, skillScore: 0, roi: 0,
-  bins: [], meaningful: false,
+  bins: [], meaningful: false, medianLean: 0,
 };
 
 /**
@@ -336,6 +347,17 @@ export function scorePredictions(
     skillScore:
       brierMarket > 0 ? Number((1 - brierModel / brierMarket).toFixed(4)) : 0,
     roi: Number((profit / settled.length).toFixed(4)),
+    medianLean: (() => {
+      const gaps = settled
+        .map((r) => Math.abs(r.modelProbability - r.marketProbability))
+        .sort((a, b) => a - b);
+      const mid = Math.floor(gaps.length / 2);
+      const med =
+        gaps.length % 2 === 0
+          ? (gaps[mid - 1] + gaps[mid]) / 2
+          : gaps[mid];
+      return Number(med.toFixed(4));
+    })(),
     bins,
     // below ~50 settled legs the differences are noise, not signal
     meaningful: settled.length >= 50,

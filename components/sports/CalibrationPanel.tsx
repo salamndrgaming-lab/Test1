@@ -195,11 +195,26 @@ export function CalibrationPanel() {
                 sub="the de-vigged price"
                 title="Same metric scored on the market's own probability"
               />
+              {/*
+                * Tone and verdict text stay NEUTRAL until the sample can
+                * carry them. A 3-0 start otherwise painted two large green
+                * numbers reading "beating the price" over a caption saying
+                * the sample is far too small to judge — the colour wins that
+                * argument long before the caption is read.
+                */}
               <Metric
                 label="Skill vs market"
                 value={`${score.skillScore >= 0 ? "+" : ""}${(score.skillScore * 100).toFixed(1)}%`}
-                tone={beatsMarket ? "good" : "bad"}
-                sub={beatsMarket ? "beating the price" : "the market is sharper"}
+                tone={
+                  score.meaningful ? (beatsMarket ? "good" : "bad") : "neutral"
+                }
+                sub={
+                  score.meaningful
+                    ? beatsMarket
+                      ? "beating the price"
+                      : "the market is sharper"
+                    : "not yet readable"
+                }
                 title="1 - (our Brier / market Brier). Positive means we're more accurate than the closing price."
               />
             </div>
@@ -208,19 +223,60 @@ export function CalibrationPanel() {
               <Metric
                 label="Flat-stake ROI"
                 value={`${score.roi >= 0 ? "+" : ""}${(score.roi * 100).toFixed(1)}%`}
-                tone={score.roi >= 0 ? "good" : "bad"}
-                sub="per unit, if every logged pick were backed"
+                tone={
+                  score.meaningful ? (score.roi >= 0 ? "good" : "bad") : "neutral"
+                }
+                sub={
+                  score.meaningful
+                    ? "per unit, if every logged pick were backed"
+                    : "per unit — needs a few hundred picks to mean anything"
+                }
               />
             </div>
 
             {!score.meaningful && (
-              <p className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[0.7rem] text-amber-200">
+              <p className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[0.7rem] leading-relaxed text-amber-200">
                 Only {score.graded} settled pick
                 {score.graded === 1 ? "" : "s"} — far too few to judge a model.
                 These numbers are noise until roughly 50+, and a few hundred
-                before any ROI figure means anything.
+                before any ROI figure means anything. An unbeaten start is
+                weaker evidence than it looks: at the prices these legs carry,
+                winning the first {score.graded} in a row happens{" "}
+                {(Math.pow(0.6, score.graded) * 100).toFixed(0)}% of the time
+                with no skill at all.
               </p>
             )}
+
+            {/*
+              * Whose record is this? While the vote is gated the published
+              * probability is the consensus plus a distribution correction,
+              * so the W-L is mostly the market's. Derived from the records
+              * themselves rather than asserted, so it stays true if the vote
+              * later opens.
+              */}
+            <p className="mt-2 rounded-lg bg-[var(--surface-2)] px-2.5 py-1.5 text-[0.7rem] leading-relaxed text-[var(--muted)]">
+              Our published probability sat a median of{" "}
+              <span className="tabular-nums text-[var(--text)]">
+                {(score.medianLean * 100).toFixed(1)}pp
+              </span>{" "}
+              from the consensus on these picks.{" "}
+              {score.medianLean < 0.01 ? (
+                <>
+                  That is close to nothing, which is by design — the
+                  model&apos;s vote is gated until the backtest measures skill,
+                  so what is being graded here is essentially the market&apos;s
+                  forecast with our distribution shape on top. A winning or
+                  losing streak is the market&apos;s, not evidence about the
+                  model.
+                </>
+              ) : (
+                <>
+                  That gap is what a record can actually test. The larger it
+                  is, the more this scoreboard is about our forecast rather
+                  than the market&apos;s.
+                </>
+              )}
+            </p>
           </>
         )}
 

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PlatformSlip, SgpRecommendation } from "@/types";
 import { PickCard } from "./PickCard";
+import { ArbBuilder } from "./ArbBuilder";
 import { DisclaimerBanner } from "@/components/layout/DisclaimerBanner";
 import { calculatePayout } from "@/lib/sgp";
 import { usePredictions } from "@/lib/usePredictions";
@@ -331,6 +332,13 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
   return (
     <div className="space-y-3">
       <DisclaimerBanner />
+
+      {/*
+        * Risk-free edge first, because it is the only thing here that does
+        * not depend on a forecast being right — and the only strategy in the
+        * project with a measured, repeatable return.
+        */}
+      <ArbBuilder rec={rec} />
 
       {/* Edge that needs no forecast: the market disagreeing with itself. */}
       {(rec.opportunities ?? []).length > 0 && (

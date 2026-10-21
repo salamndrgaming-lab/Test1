@@ -42,6 +42,68 @@ export interface ArbOpportunity {
   stakeShareA: number;
 }
 
+/**
+ * A placeable arbitrage: exact amounts, at exact books, with the guarantee
+ * recomputed AFTER rounding.
+ *
+ * `guaranteedReturn` on the opportunity is the textbook figure and assumes
+ * you can stake any fraction of a dollar. You cannot. Books take whole units,
+ * and on a thin arbitrage rounding is not a detail — a 0.5% edge on a $100
+ * outlay is 50 cents, and rounding two legs to the nearest dollar can move
+ * each by up to 50 cents. That is the difference between a guarantee and a
+ * coin flip, so the guarantee is recomputed from the amounts actually placed
+ * and `stillArbitrage` says whether it survived.
+ */
+export interface ArbSlipLeg {
+  label: string;
+  book: string;
+  american: number;
+  decimal: number;
+  /** The exact stake that would equalise payouts, before rounding. */
+  idealStake: number;
+  /** What you actually place, rounded to the unit. */
+  stake: number;
+  /** Returned if this side wins, stake included. */
+  payout: number;
+}
+
+export interface ArbSlip {
+  market: ArbOpportunity["market"];
+  matchup: string;
+  league: League;
+  legs: [ArbSlipLeg, ArbSlipLeg];
+  /** Total actually placed across both books. */
+  outlay: number;
+  /** Profit if the worse-paying side wins. This is the guarantee. */
+  worstProfit: number;
+  /** Profit if the better-paying side wins. */
+  bestProfit: number;
+  /** worstProfit / outlay, i.e. the return you are actually guaranteed. */
+  guaranteedReturn: number;
+  /** The frictionless figure, for comparison. */
+  theoreticalReturn: number;
+  /** False when rounding has eaten the edge at this stake. */
+  stillArbitrage: boolean;
+  /**
+   * Smallest total outlay at which rounding still leaves a guarantee.
+   *
+   * Thin arbitrages need size to survive rounding, and this says how much.
+   * Null when no stake up to the search ceiling works, which means the
+   * opportunity is too thin to place in whole units at all.
+   */
+  minimumStake: number | null;
+  /**
+   * The nearest workable outlay at or above what was asked for.
+   *
+   * Needed because viability is NOT monotonic in stake. On a real 0.24%
+   * arbitrage, $43 guarantees a profit and $50 loses: the rounding of the
+   * two legs lands differently, and more money is not automatically safer.
+   * A bare minimum would therefore mislead anyone who then typed a round
+   * number. Null when nothing nearby works.
+   */
+  suggestedStake: number | null;
+}
+
 export interface MiddleOpportunity {
   market: "spread" | "total";
   /** The side that wins ABOVE its line. */
@@ -297,3 +359,114 @@ export function findStaleBooks(
 
 /** Leagues whose markets are thin enough that softness is plausible. */
 export const SOFTER_MARKETS: League[] = ["NCAAB", "NCAAF", "NHL"];
+
+/* ------------------------------------------------------------------ *
+ * Arbitrage slip builder
+ * ------------------------------------------------------------------ */
+
+/** Round to the nearest whole unit the book will actually accept. */
+function roundTo(x: number, unit: number): number {
+  return Math.max(unit, Math.round(x / unit) * unit);
+}
+
+/**
+ * Turn an opportunity into exact instructions at a given outlay.
+ *
+ * The split that equalises payouts is stakeA = total · (1/dA)/(1/dA + 1/dB),
+ * which `findArbitrage` already computed as `stakeShareA`. Everything here is
+ * about what happens once that ideal is rounded to placeable amounts.
+ */
+export function buildArbSlip(
+  opp: ArbOpportunity,
+  matchup: string,
+  league: League,
+  totalStake: number,
+  unit = 1,
+): ArbSlip {
+  const dA = americanToDecimal(opp.sideA.american);
+  const dB = americanToDecimal(opp.sideB.american);
+  const idealA = totalStake * opp.stakeShareA;
+  const idealB = totalStake - idealA;
+  const stakeA = roundTo(idealA, unit);
+  const stakeB = roundTo(idealB, unit);
+  const payoutA = stakeA * dA;
+  const payoutB = stakeB * dB;
+  const outlay = stakeA + stakeB;
+  // Whichever side wins, you collect that side's payout and lose the other
+  // stake. The guarantee is the worse of the two.
+  const worstProfit = Math.min(payoutA, payoutB) - outlay;
+  const bestProfit = Math.max(payoutA, payoutB) - outlay;
+
+  /*
+   * The smallest outlay at which rounding still leaves a profit. Searched
+   * rather than derived: the rounding boundaries are not smooth, so the
+   * answer is not simply "edge divided by unit".
+   */
+  let minimumStake: number | null = null;
+  for (let s = unit * 2; s <= unit * 2000; s += unit) {
+    const a = roundTo(s * opp.stakeShareA, unit);
+    const b = roundTo(s - s * opp.stakeShareA, unit);
+    if (Math.min(a * dA, b * dB) - (a + b) > 0) {
+      minimumStake = a + b;
+      break;
+    }
+  }
+
+  /*
+   * Viability is not monotonic in stake, so this is a local search upward
+   * from the request rather than a formula. Capped so a hopeless
+   * opportunity returns null instead of scanning forever.
+   */
+  let suggestedStake: number | null = null;
+  if (worstProfit > 0) {
+    suggestedStake = outlay;
+  } else {
+    for (let s = totalStake + unit; s <= totalStake + unit * 200; s += unit) {
+      const a = roundTo(s * opp.stakeShareA, unit);
+      const b = roundTo(s - s * opp.stakeShareA, unit);
+      if (Math.min(a * dA, b * dB) - (a + b) > 0) { suggestedStake = a + b; break; }
+    }
+  }
+
+  const round2 = (x: number) => Number(x.toFixed(2));
+  return {
+    market: opp.market,
+    matchup,
+    league,
+    legs: [
+      { label: opp.sideA.label, book: opp.sideA.book, american: opp.sideA.american,
+        decimal: Number(dA.toFixed(4)), idealStake: round2(idealA),
+        stake: stakeA, payout: round2(payoutA) },
+      { label: opp.sideB.label, book: opp.sideB.book, american: opp.sideB.american,
+        decimal: Number(dB.toFixed(4)), idealStake: round2(idealB),
+        stake: stakeB, payout: round2(payoutB) },
+    ],
+    outlay: round2(outlay),
+    worstProfit: round2(worstProfit),
+    bestProfit: round2(bestProfit),
+    guaranteedReturn: Number((worstProfit / outlay).toFixed(4)),
+    theoreticalReturn: opp.guaranteedReturn,
+    stillArbitrage: worstProfit > 0,
+    minimumStake,
+    suggestedStake,
+  };
+}
+
+/**
+ * Every arbitrage on the slate, best guarantee first.
+ *
+ * Ranked by the return that survives rounding at the requested stake, not by
+ * the textbook figure — a 2% arbitrage that rounding destroys is worth less
+ * than a 0.5% one that does not.
+ */
+export function buildArbSlips(
+  found: { matchup: string; league: League; arbitrage: ArbOpportunity[] }[],
+  totalStake: number,
+  unit = 1,
+): ArbSlip[] {
+  return found
+    .flatMap((g) =>
+      g.arbitrage.map((a) => buildArbSlip(a, g.matchup, g.league, totalStake, unit)),
+    )
+    .sort((x, y) => y.guaranteedReturn - x.guaranteedReturn);
+}

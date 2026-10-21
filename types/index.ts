@@ -599,8 +599,9 @@ export interface SgpRecommendation {
    */
   opportunities?: {
     matchup: string;
+    league: League;
     arbitrage: {
-      market: string;
+      market: "moneyline" | "spread" | "total";
       sideA: { label: string; book: string; american: number };
       sideB: { label: string; book: string; american: number };
       guaranteedReturn: number;

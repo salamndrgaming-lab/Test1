@@ -59,7 +59,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "price-v20";
+export const MODEL_VERSION = "arb-v21";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -2366,6 +2366,7 @@ export function legsFromGames(
       ) {
         collect?.push({
           matchup: `${g.away.abbreviation} @ ${g.home.abbreviation}`,
+          league: g.league,
           ...found,
         });
       }
@@ -2668,6 +2669,8 @@ export function legsFromGames(
  */
 export interface GameOpportunities extends MarketOpportunities {
   matchup: string;
+  /** Carried so a slip can be built without re-deriving it from the leg. */
+  league: League;
 }
 
 /* ------------------------------------------------------------------ *

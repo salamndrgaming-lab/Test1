@@ -2,12 +2,21 @@
 
 import { useState, useRef, useEffect } from "react";
 import type { SgpRecommendation } from "@/types";
-import { answerSgpQuestion, SGP_CHAT_SUGGESTIONS, type ChatAnswer } from "@/lib/sgpChat";
+import {
+  answerSgpQuestion,
+  buildChatContext,
+  SGP_CHAT_SUGGESTIONS,
+  type ChatAnswer,
+} from "@/lib/sgpChat";
 import { classNames } from "@/lib/format";
 
 interface Turn {
   question: string;
   answer: ChatAnswer;
+  /** Where the words came from, so the user is never misled about it. */
+  source: "llm" | "local" | "pending";
+  /** Why we fell back, when we did. */
+  note?: string;
 }
 
 /**
@@ -27,17 +36,88 @@ interface Turn {
 export function SgpChat({ rec }: { rec: SgpRecommendation }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (turns.length > 0) endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns.length]);
 
-  const ask = (q: string) => {
+  /*
+   * Ask the language model, and fall back to the deterministic engine if it
+   * is unavailable. The fallback is not a degraded mode to hide — it is the
+   * same grounded answers, and the UI says which one replied so a canned
+   * response is never mistaken for a considered one.
+   */
+  const ask = async (q: string) => {
     const question = q.trim();
-    if (!question) return;
-    setTurns((t) => [...t, { question, answer: answerSgpQuestion(question, rec) }]);
+    if (!question || busy) return;
     setInput("");
+    setBusy(true);
+    const local = answerSgpQuestion(question, rec);
+    const idx = turns.length;
+    setTurns((t) => [...t, { question, answer: local, source: "pending" }]);
+
+    try {
+      const history = turns.flatMap((t) => [
+        { role: "user" as const, content: t.question },
+        { role: "assistant" as const, content: t.answer.text.join("\n\n") },
+      ]);
+      const res = await fetch("/api/sgp/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          question,
+          history,
+          context: buildChatContext(rec),
+        }),
+      });
+      const json = await res.json();
+      if (res.ok && json.text) {
+        setTurns((t) =>
+          t.map((turn, i) =>
+            i === idx
+              ? {
+                  ...turn,
+                  source: "llm",
+                  answer: {
+                    // Keep the grounded extras: the model writes the prose,
+                    // the engine supplies the cards and the follow-ups.
+                    text: String(json.text).split(/\n{2,}/).filter(Boolean),
+                    legs: local.legs,
+                    read: undefined,
+                    followUps: local.followUps,
+                  },
+                }
+              : turn,
+          ),
+        );
+      } else {
+        const note =
+          json?.error === "no-key"
+            ? "No GROQ_API_KEY set, so this is the built-in answer."
+            : json?.error === "model-unavailable"
+              ? json.detail
+              : json?.error === "timeout"
+                ? "The model timed out; this is the built-in answer."
+                : "The model was unavailable; this is the built-in answer.";
+        setTurns((t) =>
+          t.map((turn, i) =>
+            i === idx ? { ...turn, source: "local", note } : turn,
+          ),
+        );
+      }
+    } catch {
+      setTurns((t) =>
+        t.map((turn, i) =>
+          i === idx
+            ? { ...turn, source: "local", note: "Could not reach the model; this is the built-in answer." }
+            : turn,
+        ),
+      );
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -64,13 +144,24 @@ export function SgpChat({ rec }: { rec: SgpRecommendation }) {
                 {t.question}
               </p>
               <div className="max-w-[92%] space-y-1.5 rounded-2xl rounded-bl-sm bg-[var(--surface-2)] px-3 py-2">
-                {t.answer.text.map((p, j) => (
+                {t.source === "pending" ? (
+                  <p className="text-[0.78rem] italic text-[var(--muted-2)]">
+                    Thinking…
+                  </p>
+                ) : null}
+                {t.source !== "pending" && t.answer.text.map((p, j) => (
                   <p key={j} className="text-[0.78rem] leading-relaxed text-[var(--text)]">
                     {p}
                   </p>
                 ))}
 
-                {t.answer.legs && t.answer.legs.length > 0 && (
+                {t.source === "local" && t.note && (
+                  <p className="text-[0.62rem] italic text-[var(--muted-2)]">
+                    {t.note}
+                  </p>
+                )}
+
+                {t.source !== "pending" && t.answer.legs && t.answer.legs.length > 0 && (
                   <div className="mt-1 space-y-1">
                     {t.answer.legs.map((l) => (
                       <div
@@ -98,7 +189,7 @@ export function SgpChat({ rec }: { rec: SgpRecommendation }) {
                   </div>
                 )}
 
-                {t.answer.read && t.answer.read.length > 0 && (
+                {t.source !== "pending" && t.answer.read && t.answer.read.length > 0 && (
                   <div className="mt-1.5 rounded-lg border-l-4 border-l-amber-400/70 bg-amber-500/5 px-2.5 py-1.5">
                     <p className="mb-1 text-[0.65rem] font-semibold uppercase tracking-wide text-amber-300">
                       Read — judgement, not measured edge
@@ -121,7 +212,7 @@ export function SgpChat({ rec }: { rec: SgpRecommendation }) {
                   </div>
                 )}
 
-                {t.answer.followUps && t.answer.followUps.length > 0 && (
+                {t.source !== "pending" && t.answer.followUps && t.answer.followUps.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     {t.answer.followUps.map((f) => (
                       <button
@@ -165,12 +256,13 @@ export function SgpChat({ rec }: { rec: SgpRecommendation }) {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask about a pick, a team, or the odds…"
+          disabled={busy}
+          placeholder={busy ? "Thinking…" : "Ask about a pick, a team, or the odds…"}
           className="min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm"
         />
         <button
           type="submit"
-          disabled={!input.trim()}
+          disabled={!input.trim() || busy}
           className="rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-slate-900 disabled:opacity-40"
         >
           Ask

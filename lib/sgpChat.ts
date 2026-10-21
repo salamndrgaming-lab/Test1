@@ -375,3 +375,104 @@ export function answerSgpQuestion(
 }
 
 export const SGP_CHAT_SUGGESTIONS = HELP;
+
+/* ------------------------------------------------------------------ *
+ * Grounding context for an LLM
+ * ------------------------------------------------------------------ */
+
+/**
+ * The slate, compacted into the facts an assistant is allowed to use.
+ *
+ * Everything an answer may assert has to appear here. The system prompt
+ * forbids inventing anything outside it, which is only enforceable if this
+ * object is genuinely complete for the questions people ask — so it carries
+ * the awkward numbers too, not just the flattering ones.
+ */
+export function buildChatContext(rec: SgpRecommendation) {
+  const pool = (rec.candidates.length ? rec.candidates : rec.legs).filter(
+    (l) => !l.saturated,
+  );
+  const leg = (l: SgpLeg) => ({
+    selection: l.selection,
+    matchup: l.matchup,
+    league: l.league,
+    market: l.market,
+    americanOdds: l.americanOdds,
+    bestBook: l.bestBook,
+    booksSurveyed: l.booksSurveyed,
+    priceEdgePP: Number((l.edge * 100).toFixed(2)),
+    edgeSigma: Number((l.edgeSignificance ?? 0).toFixed(2)),
+    clearsBar: (l.edgeSignificance ?? 0) >= MIN_EDGE_SIGNIFICANCE && l.edge > 0,
+    publishedWinProb: l.modelProbability,
+    consensusFairProb: l.marketProbability,
+    modelLeanPP: l.modelLean != null ? Number((l.modelLean * 100).toFixed(2)) : null,
+    confidence: l.confidence,
+    riskFlags: (l.riskFlags ?? []).map((f) => `${f.severity}: ${f.label} — ${f.detail}`),
+    why: l.justification?.logic,
+    facts: l.justification?.facts ?? [],
+    stats: l.justification?.statistics ?? [],
+    situational: readFor(l),
+  });
+
+  const value = valueLegs(rec);
+  const arbs = (rec.opportunities ?? []).flatMap((o) =>
+    o.arbitrage.map((a) => ({ matchup: o.matchup, ...a })),
+  );
+  const middles = (rec.opportunities ?? [])
+    .flatMap((o) => o.middles.map((m) => ({ matchup: o.matchup, ...m })))
+    .filter((m) => m.expectedValue > 0)
+    .sort((a, b) => b.expectedValue - a.expectedValue)
+    .slice(0, 5);
+
+  return {
+    slate: {
+      modelVersion: rec.modelVersion,
+      verdict: rec.verdict,
+      booksSurveyed: rec.marketSurvey.books,
+      meanVig: rec.marketSurvey.meanVig,
+      legsAvailable: pool.length,
+      gamesAvailable: new Set(pool.map((l) => l.gameId)).size,
+      modelVote: rec.modelVote,
+    },
+    legsClearingBar: value.slice(0, 6).map(leg),
+    bestByPrice: byEdge(rec).slice(0, 6).map(leg),
+    worstByPrice: byEdge(rec).slice(-3).reverse().map(leg),
+    arbitrage: arbs,
+    nearestArbitrage: (rec.opportunities ?? [])
+      .map((o) => (o.nearArb ? { matchup: o.matchup, ...o.nearArb } : null))
+      .filter(Boolean)
+      .sort((a, b) => (a!.pointsFromArb ?? 0) - (b!.pointsFromArb ?? 0))
+      .slice(0, 3),
+    positiveEvMiddles: middles,
+    platforms: (rec.platforms ?? []).slice(0, 6).map((p) => ({
+      book: p.book,
+      legsOffered: p.legs.length,
+      gamesQuoted: p.gamesAvailable,
+      meanLegEdgePP: Number((p.meanLegEdge * 100).toFixed(2)),
+      priceGapVsBestPP: Number((p.priceGapVsBest * 100).toFixed(2)),
+      bestOnEveryLeg: p.bestOnEveryLeg,
+      valueLegsClearingBar: p.significantValueLegs,
+      shakyLegs: p.shakyLegs,
+    })),
+    slipEconomics: {
+      note: "Expected value falls about 2 percentage points per added leg, because each leg pays the book's margin again.",
+      approxEvByLength: { "1": -0.03, "3": -0.08, "6": -0.16, "10": -0.25 },
+    },
+    /** What has actually been measured about this model. Not optional. */
+    measuredTruth: {
+      forecastBeatsMarket: false,
+      blindTest:
+        "53,600 games across NFL, NBA, NCAAF and MLB with real closing lines, strict walk-forward. The model's projection lost to the closing line in every league: NBA -3.97% skill, NFL -6.63%, NCAAF -22.71%. Against the spread it never cleared the 52.4% break-even.",
+      whyVoteIsZero:
+        "Because of that, the model's vote on the published probability is gated. The published number is the market consensus plus a distribution-shape correction.",
+      situationalFactorsArePriced:
+        "Weather, rest, roof, divisional games, quarterback changes and injury reports were each tested against the market's own residual. All were already priced by the closing line. Situational reasoning is therefore a reason to distrust a bet, not a reason to expect profit.",
+      whatDoesWork:
+        "Price edge. Betting every best price across 14 books returned -2.21% over 37,904 historical sides, while sides clearing the 2-sigma bar returned about +17% on 115 bets — promising but not yet statistically confirmed. Arbitrage is real and risk-free, existing on 2.2% of games at a mean 1.4% return.",
+      arbitrageBaseRate:
+        "A genuine arbitrage existed on 2.2% of 9,716 historical games surveyed across 14 books. With fewer books, expect it less often.",
+    },
+  };
+}
+
+export type SgpChatContext = ReturnType<typeof buildChatContext>;

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PlatformSlip, SgpRecommendation } from "@/types";
 import { PickCard } from "./PickCard";
 import { ArbBuilder } from "./ArbBuilder";
+import { SgpChat } from "./SgpChat";
 import { DisclaimerBanner } from "@/components/layout/DisclaimerBanner";
 import { calculatePayout } from "@/lib/sgp";
 import { usePredictions } from "@/lib/usePredictions";
@@ -332,6 +333,8 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
   return (
     <div className="space-y-3">
       <DisclaimerBanner />
+
+      <SgpChat rec={rec} />
 
       {/*
         * Risk-free edge first, because it is the only thing here that does

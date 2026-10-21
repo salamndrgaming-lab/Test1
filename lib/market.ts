@@ -63,10 +63,62 @@ const NON_BOOK_PROVIDERS = [
   "aggregate",
 ];
 
+/**
+ * Betting EXCHANGES, which are excluded for a different reason.
+ *
+ * An exchange is a real venue with real money behind it, so the objection is
+ * not that it carries no information. It is that an exchange quotes a
+ * fundamentally different object: a two-sided order book, often published in
+ * decimal or as a lay price, with commission taken from winnings rather than
+ * built into the price. Mixing one into a consensus of American-odds
+ * sportsbooks compares incompatible numbers.
+ *
+ * This is not hypothetical. Testing the price-edge machinery on 9,716
+ * historical games, MATCHBOOK's quotes were recorded as values like 9.0,
+ * -28.0 and 50.0 — not American odds at all. Left in, they manufactured a
+ * two-way "arbitrage" paying 15% risk-free and inflated the apparent
+ * arbitrage rate from 2.2% of games to 8.1%. Every one of those was fake.
+ */
+const EXCHANGES = [
+  "matchbook",
+  "betfair",
+  "smarkets",
+  "betdaq",
+  "prophet x",
+  "prophetx",
+  "sporttrade",
+  "polymarket",
+  "kalshi",
+];
+
 export function isBookmaker(name: string | undefined): boolean {
   if (!name) return false;
   const n = name.toLowerCase();
-  return !NON_BOOK_PROVIDERS.some((bad) => n.includes(bad));
+  return (
+    !NON_BOOK_PROVIDERS.some((bad) => n.includes(bad)) &&
+    !EXCHANGES.some((ex) => n.includes(ex))
+  );
+}
+
+/**
+ * Plausibility bounds on an American price.
+ *
+ * A valid American price is never between -100 and +100 exclusive, and never
+ * zero — those are a different notation that has been mislabelled. The same
+ * historical test turned up 86 such quotes, and one of them divided by zero
+ * and produced an infinite expected value. A number that cannot be a price
+ * must never reach the consensus, the best-price search, or the arbitrage
+ * detector.
+ */
+export function isPlausibleAmerican(
+  odds: number | undefined | null,
+): odds is number {
+  return (
+    odds != null &&
+    Number.isFinite(odds) &&
+    Math.abs(odds) >= 100 &&
+    Math.abs(odds) <= 100000
+  );
 }
 
 export interface ConsensusSide {
@@ -155,14 +207,10 @@ function collect(
     // where it must not be possible for a derived feed to slip in.
     if (!isBookmaker(b.book)) continue;
     const [home, away] = pick(b);
-    if (
-      home == null ||
-      away == null ||
-      !Number.isFinite(home) ||
-      !Number.isFinite(away)
-    ) {
-      continue;
-    }
+    // A value that cannot be an American price is a mislabelled notation, not
+    // a quote. See isPlausibleAmerican — one such pair produced an infinite
+    // expected value in testing.
+    if (!isPlausibleAmerican(home) || !isPlausibleAmerican(away)) continue;
     out.push({ book: b.book, home, away });
   }
   return out;

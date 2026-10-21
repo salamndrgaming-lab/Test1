@@ -22,6 +22,12 @@ export interface PredictionRecord {
   modelProbability: number;
   /** De-vigged market probability — the benchmark we must beat. */
   marketProbability: number;
+  /** Consensus fair probability minus the break-even at the best price. */
+  priceEdge?: number;
+  /** That edge in units of the fair-value standard error. */
+  edgeSignificance?: number;
+  /** How many books the consensus was built from. */
+  booksSurveyed?: number;
   recordedAt: string;
 
   // everything needed to grade it later
@@ -80,6 +86,21 @@ export function toPrediction(leg: SgpLeg): PredictionRecord | null {
     americanOdds: leg.americanOdds,
     modelProbability: leg.modelProbability,
     marketProbability: leg.marketProbability,
+    /*
+     * The price-edge fields, logged so the ONE strategy with measured
+     * promise can be graded as a cohort later.
+     *
+     * Tested on 9,716 historical games with a median of 14 books: betting
+     * every best price returned -2.21% (half the vig recovered by shopping
+     * alone), while sides clearing the significance bar returned +18.8% on
+     * 115 bets — positive, monotone in the bar, profitable in 5 of 6
+     * seasons, and t=2.11 against a corrected bar of 2.50. It did not clear.
+     * What it needs is volume, which is exactly what logging it here
+     * accumulates.
+     */
+    priceEdge: leg.priceEdge,
+    edgeSignificance: leg.edgeSignificance,
+    booksSurveyed: leg.booksSurveyed,
     recordedAt: new Date().toISOString(),
     kind: meta.kind,
     side: meta.side,
@@ -280,13 +301,49 @@ export interface ScoreCard {
    * near zero, a hot or cold streak says nothing about the model either way.
    */
   medianLean: number;
+  /**
+   * The price-edge cohort, scored separately from everything else.
+   *
+   * This is the only strategy in the project with measured promise, and it
+   * is a claim about PRICE rather than forecast, so it must not be pooled
+   * with picks taken for other reasons. `shopped` is every logged pick (the
+   * baseline: betting the best available number); `value` is the subset that
+   * cleared the significance bar at the time it was logged.
+   *
+   * Expect `shopped` to sit near minus half the vig and `value` to be the
+   * thing worth watching. Historical testing put `value` at +18.8% on 115
+   * bets, which failed a corrected significance bar — this is where the
+   * volume to settle it accumulates.
+   */
+  priceEdge: {
+    shopped: { n: number; wins: number; roi: number };
+    value: { n: number; wins: number; roi: number; meanEdge: number };
+    /** Bets needed before the value cohort can be read at all. */
+    meaningful: boolean;
+  };
 }
 
 const EMPTY: ScoreCard = {
   graded: 0, wins: 0, losses: 0, pushes: 0,
   brierModel: 0, brierMarket: 0, skillScore: 0, roi: 0,
   bins: [], meaningful: false, medianLean: 0,
+  priceEdge: {
+    shopped: { n: 0, wins: 0, roi: 0 },
+    value: { n: 0, wins: 0, roi: 0, meanEdge: 0 },
+    meaningful: false,
+  },
 };
+
+/** The significance bar a logged pick had to clear to count as a value bet. */
+export const MIN_LOGGED_SIGNIFICANCE = 2;
+/**
+ * Value bets needed before the cohort says anything.
+ *
+ * Historical testing reached t=2.11 on 115 bets against a corrected bar of
+ * 2.50; roughly 160 at the same effect size would clear it. Set here so the
+ * UI cannot call it a result before then.
+ */
+export const MIN_VALUE_BETS = 160;
 
 /**
  * Score the graded predictions. Pushes are excluded — they're not a test of
@@ -347,6 +404,31 @@ export function scorePredictions(
     skillScore:
       brierMarket > 0 ? Number((1 - brierModel / brierMarket).toFixed(4)) : 0,
     roi: Number((profit / settled.length).toFixed(4)),
+    priceEdge: (() => {
+      const payoff = (r: PredictionRecord) =>
+        r.won ? americanToDecimal(r.americanOdds) - 1 : -1;
+      const shopped = settled;
+      // Graded on the bar AS LOGGED, so a later change to the threshold
+      // cannot retroactively rewrite which bets counted.
+      const value = settled.filter(
+        (r) => (r.priceEdge ?? 0) > 0 &&
+               (r.edgeSignificance ?? 0) >= MIN_LOGGED_SIGNIFICANCE,
+      );
+      const roi = (rs: PredictionRecord[]) =>
+        rs.length ? Number((rs.reduce((a, r) => a + payoff(r), 0) / rs.length).toFixed(4)) : 0;
+      return {
+        shopped: { n: shopped.length, wins: shopped.filter((r) => r.won).length, roi: roi(shopped) },
+        value: {
+          n: value.length,
+          wins: value.filter((r) => r.won).length,
+          roi: roi(value),
+          meanEdge: value.length
+            ? Number((value.reduce((a, r) => a + (r.priceEdge ?? 0), 0) / value.length).toFixed(4))
+            : 0,
+        },
+        meaningful: value.length >= MIN_VALUE_BETS,
+      };
+    })(),
     medianLean: (() => {
       const gaps = settled
         .map((r) => Math.abs(r.modelProbability - r.marketProbability))

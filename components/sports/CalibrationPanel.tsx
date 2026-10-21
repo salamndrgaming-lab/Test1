@@ -248,6 +248,67 @@ export function CalibrationPanel() {
             )}
 
             {/*
+              * The price-edge cohort, kept apart from the forecast record.
+              * It is a claim about price, not prediction, and it is the only
+              * strategy here with measured promise.
+              */}
+            <div className="mt-3 rounded-lg bg-[var(--surface-2)] p-2.5">
+              <p className="mb-1 text-[0.7rem] font-semibold text-[var(--text)]">
+                Price edge — tracked separately
+              </p>
+              <p className="mb-2 text-[0.65rem] leading-relaxed text-[var(--muted)]">
+                Edge taken from the <em>price</em> rather than the forecast:
+                the gap between the consensus fair value and the best number
+                any surveyed book offered. Tested on 9,716 historical games,
+                shopping alone returned −2.2% (half the vig recovered) and the
+                bets clearing the significance bar returned +18.8% — promising,
+                but on too few bets to call. This is where the volume to settle
+                it accumulates.
+              </p>
+              <div className="grid grid-cols-2 gap-2 text-[0.7rem]">
+                <div>
+                  <p className="text-[var(--muted-2)]">All picks (shopped)</p>
+                  <p className="mt-0.5 font-semibold tabular-nums">
+                    {score.priceEdge.shopped.roi >= 0 ? "+" : ""}
+                    {(score.priceEdge.shopped.roi * 100).toFixed(1)}% ROI
+                  </p>
+                  <p className="text-[var(--muted-2)] tabular-nums">
+                    {score.priceEdge.shopped.wins}/{score.priceEdge.shopped.n} won
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[var(--muted-2)]">Cleared the bar</p>
+                  <p
+                    className={classNames(
+                      "mt-0.5 font-semibold tabular-nums",
+                      score.priceEdge.meaningful
+                        ? score.priceEdge.value.roi >= 0
+                          ? "text-good"
+                          : "text-bad"
+                        : "",
+                    )}
+                  >
+                    {score.priceEdge.value.n === 0
+                      ? "—"
+                      : `${score.priceEdge.value.roi >= 0 ? "+" : ""}${(score.priceEdge.value.roi * 100).toFixed(1)}% ROI`}
+                  </p>
+                  <p className="text-[var(--muted-2)] tabular-nums">
+                    {score.priceEdge.value.wins}/{score.priceEdge.value.n} won
+                    {score.priceEdge.value.n > 0 &&
+                      ` · ${(score.priceEdge.value.meanEdge * 100).toFixed(1)}pp avg edge`}
+                  </p>
+                </div>
+              </div>
+              {!score.priceEdge.meaningful && (
+                <p className="mt-1.5 text-[0.65rem] text-[var(--muted-2)]">
+                  {score.priceEdge.value.n} of ~160 value bets needed before
+                  this figure means anything. Until then it is a counter, not a
+                  result.
+                </p>
+              )}
+            </div>
+
+            {/*
               * Whose record is this? While the vote is gated the published
               * probability is the consensus plus a distribution correction,
               * so the W-L is mostly the market's. Derived from the records

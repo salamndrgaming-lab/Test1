@@ -1,5 +1,6 @@
 import type { BookPrice, League } from "@/types";
 import { americanToDecimal, impliedProbability } from "@/lib/sgp";
+import { isBookmaker, isPlausibleAmerican } from "@/lib/market";
 import type { DiscreteDist } from "@/lib/distributions";
 
 /**
@@ -77,8 +78,20 @@ function best(
 ): { book: string; american: number } | null {
   let out: { book: string; american: number } | null = null;
   for (const b of books) {
+    /*
+     * The same two guards the consensus uses, applied here too, because this
+     * is the module that reports RISK-FREE profit and so is the one that must
+     * not be fooled.
+     *
+     * Both failures were observed on real historical data: an exchange whose
+     * quotes were not American odds at all produced a two-way "arbitrage"
+     * paying 15% guaranteed, and the apparent arbitrage rate fell from 8.1%
+     * of games to 2.2% once exchanges and impossible prices were excluded.
+     * Every one of the removed opportunities was fictional.
+     */
+    if (!isBookmaker(b.book)) continue;
     const v = pick(b);
-    if (v == null || !Number.isFinite(v)) continue;
+    if (!isPlausibleAmerican(v)) continue;
     if (!out || v > out.american) out = { book: b.book, american: v };
   }
   return out;
@@ -178,8 +191,11 @@ export function findMiddles(
 ): MiddleOpportunity[] {
   const out: MiddleOpportunity[] = [];
 
-  for (const a of books) {
-    for (const b of books) {
+  // Same guards as findArbitrage: an exchange's non-American quotes or an
+  // impossible price would otherwise invent a middle that cannot be placed.
+  const usable = books.filter((b) => isBookmaker(b.book));
+  for (const a of usable) {
+    for (const b of usable) {
       if (a.book === b.book) continue;
       const lowLine = lineOf(a);
       const highLine = lineOf(b);
@@ -187,8 +203,8 @@ export function findMiddles(
       const highOdds = highPrice(b);
       if (
         lowLine == null || highLine == null ||
-        lowOdds == null || highOdds == null ||
-        !Number.isFinite(lowLine) || !Number.isFinite(highLine)
+        !Number.isFinite(lowLine) || !Number.isFinite(highLine) ||
+        !isPlausibleAmerican(lowOdds) || !isPlausibleAmerican(highOdds)
       ) {
         continue;
       }
@@ -235,7 +251,10 @@ export function findStaleBooks(
   consensusHomeProb: number | null,
 ): StaleBook[] {
   const stamped = books.filter(
-    (b) => b.lastUpdate && Number.isFinite(Date.parse(b.lastUpdate)),
+    (b) =>
+      isBookmaker(b.book) &&
+      b.lastUpdate &&
+      Number.isFinite(Date.parse(b.lastUpdate)),
   );
   if (stamped.length < 2) return [];
 

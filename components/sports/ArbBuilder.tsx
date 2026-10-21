@@ -40,19 +40,78 @@ export function ArbBuilder({ rec }: { rec: SgpRecommendation }) {
   const live = slips.filter((s) => s.stillArbitrage);
   const roundedAway = slips.filter((s) => !s.stillArbitrage);
 
+  // The closest the market came, best first — so an empty list is legible.
+  const near = useMemo(
+    () =>
+      (rec.opportunities ?? [])
+        .map((o) => ({ matchup: o.matchup, n: o.nearArb }))
+        .filter((x): x is { matchup: string; n: NonNullable<typeof x.n> } => x.n != null)
+        .sort((a, b) => a.n.pointsFromArb - b.n.pointsFromArb)
+        .slice(0, 5),
+    [rec.opportunities],
+  );
+
   if (slips.length === 0) {
     return (
       <div className="card">
         <h3 className="mb-1 font-serif text-lg font-medium text-[var(--text)]">
           Arbitrage builder
         </h3>
-        <p className="text-xs leading-relaxed text-[var(--muted)]">
+        <p className="mb-3 text-xs leading-relaxed text-[var(--muted)]">
           No two surveyed books are currently pricing the same two-way market
-          at a combined under 100%. That is the normal state — measured on
-          9,716 historical games with a median of 14 books, a genuine
-          arbitrage existed on <strong>2.2%</strong> of them at a mean{" "}
-          <strong>1.4%</strong> guaranteed return. Nothing to place right now.
+          at a combined under 100%, so there is nothing to place. That is the
+          normal state: measured on 9,716 historical games with a median of 14
+          books, a genuine arbitrage existed on <strong>2.2%</strong> of them
+          at a mean <strong>1.4%</strong> guaranteed return. This feed carries{" "}
+          <strong>{(rec.marketSurvey?.books ?? []).length || "a few"}</strong>{" "}
+          books, so expect one every few days rather than daily.
         </p>
+
+        {near.length > 0 && (
+          <>
+            <p className="mb-1.5 text-[0.7rem] font-semibold text-[var(--text)]">
+              How close the market came
+            </p>
+            <table className="w-full text-[0.7rem]">
+              <thead>
+                <tr className="text-[0.6rem] uppercase tracking-wide text-[var(--muted-2)]">
+                  <th className="pb-1 text-left font-medium">Game</th>
+                  <th className="pb-1 text-left font-medium">Best pair</th>
+                  <th className="pb-1 text-right font-medium">Combined</th>
+                  <th className="pb-1 text-right font-medium">Short by</th>
+                </tr>
+              </thead>
+              <tbody>
+                {near.map(({ matchup, n }) => (
+                  <tr key={matchup + n.market} className="border-t border-[var(--border)]">
+                    <td className="py-1 pr-2">
+                      {matchup}
+                      <span className="ml-1 text-[0.6rem] uppercase text-[var(--muted-2)]">
+                        {n.market}
+                      </span>
+                    </td>
+                    <td className="py-1 pr-2 text-[var(--muted)]">
+                      {n.sideA.book} / {n.sideB.book}
+                    </td>
+                    <td className="py-1 text-right tabular-nums">
+                      {(n.combinedImplied * 100).toFixed(2)}%
+                    </td>
+                    <td className="py-1 text-right tabular-nums text-[var(--muted-2)]">
+                      {n.pointsFromArb.toFixed(2)}pp
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="mt-2 text-[0.65rem] leading-relaxed text-[var(--muted-2)]">
+              Under 100% is a risk-free bet. These are the two best prices
+              across books on each game, so the detector is live and working —
+              the market simply has not crossed the line. The lever is more
+              books: disagreement is what creates an arbitrage, and more
+              quotes means more chances for two of them to disagree enough.
+            </p>
+          </>
+        )}
       </div>
     );
   }

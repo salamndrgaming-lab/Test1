@@ -617,6 +617,13 @@ export interface SgpRecommendation {
       expectedValue: number;
     }[];
     stale: { book: string; minutesBehind: number; deviation: number }[];
+    nearArb?: {
+      market: "moneyline" | "spread" | "total";
+      sideA: { label: string; book: string; american: number };
+      sideB: { label: string; book: string; american: number };
+      combinedImplied: number;
+      pointsFromArb: number;
+    };
   }[];
   /** Plain-language notes about the model and its caveats. */
   notes: string[];

@@ -104,6 +104,26 @@ export interface ArbSlip {
   suggestedStake: number | null;
 }
 
+/**
+ * The best two-book pair on a two-way market, arbitrage or not.
+ *
+ * An empty arbitrage list is the normal state — measured at 2.2% of games
+ * with 14 books, and this feed carries 8 — but "nothing found" and "the
+ * detector is dead" look identical on screen. Reporting the closest pair
+ * makes the difference visible: 100.4% means the market came within four
+ * tenths of a point of a risk-free bet, which is information. It also shows
+ * at a glance whether adding books would plausibly cross the line.
+ */
+export interface NearArb {
+  market: ArbOpportunity["market"];
+  sideA: { label: string; book: string; american: number };
+  sideB: { label: string; book: string; american: number };
+  /** Combined implied probability at the two best prices. Under 1 is an arb. */
+  combinedImplied: number;
+  /** Percentage points short of an arbitrage. Zero or less means it IS one. */
+  pointsFromArb: number;
+}
+
 export interface MiddleOpportunity {
   market: "spread" | "total";
   /** The side that wins ABOVE its line. */
@@ -129,6 +149,8 @@ export interface StaleBook {
 
 export interface MarketOpportunities {
   arbitrage: ArbOpportunity[];
+  /** The closest two-book pair, so an empty arbitrage list stays legible. */
+  nearArb?: NearArb;
   middles: MiddleOpportunity[];
   stale: StaleBook[];
 }
@@ -469,4 +491,32 @@ export function buildArbSlips(
       g.arbitrage.map((a) => buildArbSlip(a, g.matchup, g.league, totalStake, unit)),
     )
     .sort((x, y) => y.guaranteedReturn - x.guaranteedReturn);
+}
+
+
+/**
+ * The best cross-book pair on a two-way market, whether or not it arbitrages.
+ *
+ * Same guards and same best-price search as findArbitrage; it simply does not
+ * refuse the result when the total lands at or above 100%.
+ */
+export function findBestTwoWay(
+  market: ArbOpportunity["market"],
+  books: BookPrice[],
+  sideA: { label: string; pick: (b: BookPrice) => number | undefined },
+  sideB: { label: string; pick: (b: BookPrice) => number | undefined },
+): NearArb | null {
+  const a = best(books, sideA.pick);
+  const b = best(books, sideB.pick);
+  if (!a || !b || a.book === b.book) return null;
+  const total =
+    impliedProbability(americanToDecimal(a.american)) +
+    impliedProbability(americanToDecimal(b.american));
+  return {
+    market,
+    sideA: { label: sideA.label, book: a.book, american: a.american },
+    sideB: { label: sideB.label, book: b.book, american: b.american },
+    combinedImplied: Number(total.toFixed(4)),
+    pointsFromArb: Number(((total - 1) * 100).toFixed(2)),
+  };
 }

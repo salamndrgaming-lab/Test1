@@ -28,6 +28,7 @@ import {
 } from "@/lib/market";
 import {
   findArbitrage,
+  findBestTwoWay,
   findMiddles,
   findStaleBooks,
   type MarketOpportunities,
@@ -59,7 +60,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "arb-v21";
+export const MODEL_VERSION = "arb-v21.1";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -2328,6 +2329,25 @@ export function legsFromGames(
           { label: `Under ${consensus.modalTotal ?? ""}`, pick: (b) => b.underOdds }),
       ].filter((a): a is NonNullable<typeof a> => a !== null);
 
+      /*
+       * The same three markets, but keeping the best pair even when it does
+       * NOT arbitrage. An empty arbitrage list is the normal state and looks
+       * identical to a broken detector; the near miss makes the difference
+       * visible. See NearArb.
+       */
+      const near = [
+        findBestTwoWay("moneyline", books,
+          { label: `${g.home.abbreviation} ML`, pick: (b) => b.homeMoneyline },
+          { label: `${g.away.abbreviation} ML`, pick: (b) => b.awayMoneyline }),
+        findBestTwoWay("spread", atModalSpread,
+          { label: `${g.home.abbreviation} ${consensus.modalSpread ?? ""}`, pick: (b) => b.spreadHomeOdds },
+          { label: `${g.away.abbreviation} ${-(consensus.modalSpread ?? 0)}`, pick: (b) => b.spreadAwayOdds }),
+        findBestTwoWay("total", atModalTotal,
+          { label: `Over ${consensus.modalTotal ?? ""}`, pick: (b) => b.overOdds },
+          { label: `Under ${consensus.modalTotal ?? ""}`, pick: (b) => b.underOdds }),
+      ].filter((n): n is NonNullable<typeof n> => n !== null)
+       .sort((a, b) => a.pointsFromArb - b.pointsFromArb);
+
       // Middles need the DIFFERENT lines, priced off the real distribution.
       const spreadMiddles = findMiddles(
         "spread", books, gm.marginDist,
@@ -2351,6 +2371,8 @@ export function legsFromGames(
 
       const found: MarketOpportunities = {
         arbitrage: arbs,
+        // Only the single closest pair per game; the rest is noise.
+        nearArb: near[0],
         middles: [...spreadMiddles, ...totalMiddles]
           .sort((a, b) => b.expectedValue - a.expectedValue)
           .slice(0, 3),
@@ -2362,7 +2384,8 @@ export function legsFromGames(
       if (
         found.arbitrage.length > 0 ||
         found.middles.length > 0 ||
-        found.stale.length > 0
+        found.stale.length > 0 ||
+        found.nearArb != null
       ) {
         collect?.push({
           matchup: `${g.away.abbreviation} @ ${g.home.abbreviation}`,

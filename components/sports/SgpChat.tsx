@@ -70,6 +70,21 @@ export function SgpChat({ rec }: { rec: SgpRecommendation }) {
           question,
           history,
           context: buildChatContext(rec),
+          /*
+           * Team names so the server can match reporting to this slate.
+           * Sent from here because the client already has them; the server
+           * never guesses which games are on.
+           */
+          teams: [
+            ...new Map(
+              (rec.candidates.length ? rec.candidates : rec.legs).flatMap((l) =>
+                l.matchup.split(" @ ").map((n) => [n.trim(), {
+                  name: n.trim(),
+                  league: l.league,
+                }] as const),
+              ),
+            ).values(),
+          ],
         }),
       });
       const json = await res.json();

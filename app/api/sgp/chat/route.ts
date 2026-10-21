@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { fetchSlateNews } from "@/lib/providers/sportsnews";
 
 export const dynamic = "force-dynamic";
 
@@ -90,6 +91,13 @@ ABSOLUTE RULES — these are not style preferences:
 6. No hype. No "lock", "can't lose", "free money", "smash". You are talking about losing propositions most of the time and should sound like it.
 7. Gambling is risky. Never imply a guarantee except for genuine arbitrage, and even then note that it requires both bets being placed at the quoted prices.
 
+REPORTING — you may be given recent news headlines about these teams. Rules for them:
+8. News is UNVERIFIED and may be stale or about a different team with a similar name. Each item carries its age in hours. Say how old an item is when you lean on it, and never treat a headline as a fact you have confirmed.
+9. Never take a NUMBER from a headline. Prices, probabilities and edges come only from the slate context.
+10. News is for explaining RISK and LINE MOVEMENT, never for generating edge. Public reporting is public — the closing line has already read it, usually within minutes. If a report makes a bet look better, that information is in the price already; what it legitimately does is tell you a bet is riskier than the model can see, or explain why a line moved while the model stayed put.
+11. Never claim an information advantage. You do not have one. If asked whether news gives an edge, say plainly that it does not and why: across 53,600 tested games every situational factor that could be quantified was already priced by the market.
+12. If no reporting was retrieved, say so rather than reasoning from memory about these teams. You have no reliable knowledge of recent events beyond what is provided.
+
 STYLE: Conversational and direct, like a sharp friend who knows the numbers — not a disclaimer generator and not a hype man. Short paragraphs. Lead with the answer. Use specific figures from the context. It is fine to be funny or blunt. It is not fine to be encouraging about a bad bet.
 
 If asked something the context cannot answer, say so and offer what you can answer instead.`;
@@ -98,6 +106,8 @@ interface Body {
   question?: string;
   context?: unknown;
   history?: { role: "user" | "assistant"; content: string }[];
+  /** Teams on the slate, so reporting can be matched to them. */
+  teams?: { name: string; league: string }[];
 }
 
 export async function POST(req: Request) {
@@ -131,6 +141,25 @@ export async function POST(req: Request) {
   const timer = setTimeout(() => controller.abort(), 25_000);
   try {
     const model = await pickModel(key, controller.signal);
+
+    /*
+     * Reporting, fetched here and NOWHERE else.
+     *
+     * This is the only place in the app that reads the sports wire, and it
+     * feeds the assistant alone — not the ratings, the consensus, the price
+     * edge or the expected value of anything. Keeping it out of those is the
+     * whole point: they are measured against outcomes and a headline is not.
+     * A failure is silent because an assistant with no news is merely less
+     * informed, while an assistant that refuses to answer is broken.
+     */
+    const news = Array.isArray(body.teams) && body.teams.length > 0
+      ? await fetchSlateNews(
+          body.teams
+            .filter((t) => t && typeof t.name === "string")
+            .slice(0, 40) as { name: string; league: never }[],
+          controller.signal,
+        ).catch(() => [])
+      : [];
     // Hoisted so a retry on a different model can reuse it verbatim.
     const payload = {
       temperature: 0.4,
@@ -141,8 +170,15 @@ export async function POST(req: Request) {
         {
           role: "user",
           content:
-            `Slate context (the ONLY facts you may use):\n` +
+            `Slate context (the ONLY numbers you may use):\n` +
             `${JSON.stringify(body.context ?? {})}\n\n` +
+            (news.length
+              ? `Recent reporting about these teams. This is UNVERIFIED ` +
+                `third-party reporting, not data, and none of it is in the ` +
+                `figures above. Use it only to explain risk or a line move — ` +
+                `never as edge, and never as a source of numbers:\n` +
+                `${JSON.stringify(news)}\n\n`
+              : `No recent reporting was retrieved for these teams.\n\n`) +
             `Question: ${question}`,
         },
       ],

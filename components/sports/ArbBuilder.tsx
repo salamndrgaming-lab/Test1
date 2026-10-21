@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { SgpRecommendation } from "@/types";
-import { buildArbSlips } from "@/lib/arbitrage";
+import { buildArbSlips, buildMiddleSlips } from "@/lib/arbitrage";
 import { formatMoney, formatOdds, classNames } from "@/lib/format";
 
 /**
@@ -37,6 +37,26 @@ export function ArbBuilder({ rec }: { rec: SgpRecommendation }) {
     [rec.opportunities, stake, unit],
   );
 
+  /*
+   * Positive-expectation middles, built the same way. Kept separate from the
+   * arbitrage list because they are a different kind of bet: a middle
+   * usually loses a little and occasionally wins a lot, which is not what
+   * "risk-free" means and must not be presented as if it were.
+   */
+  const middles = useMemo(
+    () =>
+      buildMiddleSlips(
+        (rec.opportunities ?? []).map((o) => ({
+          matchup: o.matchup,
+          league: o.league,
+          middles: o.middles,
+        })),
+        stake,
+        unit,
+      ).slice(0, 6),
+    [rec.opportunities, stake, unit],
+  );
+
   const live = slips.filter((s) => s.stillArbitrage);
   const roundedAway = slips.filter((s) => !s.stillArbitrage);
 
@@ -50,6 +70,115 @@ export function ArbBuilder({ rec }: { rec: SgpRecommendation }) {
         .slice(0, 5),
     [rec.opportunities],
   );
+
+
+  /* Shared by both the empty and the populated state. */
+  const middleSection =
+    middles.length === 0 ? null : (
+      <div className="mt-4">
+        <h4 className="mb-1 text-sm font-semibold text-[var(--text)]">
+          Middles — positive expectation, not risk-free
+        </h4>
+        <p className="mb-2 text-[0.68rem] leading-relaxed text-[var(--muted)]">
+          Two books posting different lines, where a band of results wins{" "}
+          <em>both</em> bets. This is a different shape from an arbitrage and
+          the difference matters: a middle normally loses a little, and
+          occasionally wins a lot. The probability below is exact, computed
+          from the discrete score distribution with pushes handled rather than
+          approximated — which is the one place this model&apos;s distribution
+          work pays for itself.
+        </p>
+        <div className="space-y-2">
+          {middles.map((m, i) => (
+            <div
+              key={`${m.matchup}-${m.market}-${i}`}
+              className="rounded-xl border border-[var(--border)] p-2.5"
+            >
+              <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+                <p className="text-sm font-semibold">
+                  {m.matchup}
+                  <span className="ml-1.5 text-[0.65rem] font-normal uppercase tracking-wide text-[var(--muted-2)]">
+                    {m.market}
+                  </span>
+                </p>
+                <span
+                  className={classNames(
+                    "rounded px-2 py-0.5 text-[0.7rem] font-semibold tabular-nums",
+                    m.expectedValue > 0
+                      ? "bg-green-500/15 text-green-300"
+                      : "bg-[var(--surface-2)] text-[var(--muted)]",
+                  )}
+                >
+                  {m.expectedValue >= 0 ? "+" : ""}
+                  {(m.expectedValue * 100).toFixed(2)}% EV ·{" "}
+                  {formatMoney(m.expectedProfit)}
+                </span>
+              </div>
+
+              <table className="w-full text-[0.72rem]">
+                <tbody>
+                  {m.legs.map((l) => (
+                    <tr key={l.book + l.label} className="border-t border-[var(--border)]">
+                      <td className="py-1 pr-2">{l.label}</td>
+                      <td className="py-1 pr-2 text-[var(--muted)]">{l.book}</td>
+                      <td className="py-1 text-right tabular-nums">
+                        {formatOdds(l.american)}
+                      </td>
+                      <td className="py-1 text-right font-semibold tabular-nums">
+                        {formatMoney(l.stake)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div className="mt-1.5 grid grid-cols-3 gap-2 text-[0.7rem]">
+                <div>
+                  <p className="text-[var(--muted-2)]">Both win</p>
+                  <p className="font-semibold tabular-nums text-good">
+                    {formatMoney(m.middleProfit)}
+                  </p>
+                  <p className="text-[0.6rem] text-[var(--muted-2)] tabular-nums">
+                    {(m.middleProbability * 100).toFixed(1)}% chance
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[var(--muted-2)]">Otherwise</p>
+                  <p
+                    className={classNames(
+                      "font-semibold tabular-nums",
+                      m.missProfit >= 0 ? "text-good" : "text-bad",
+                    )}
+                  >
+                    {formatMoney(m.missProfit)}
+                  </p>
+                  <p className="text-[0.6rem] text-[var(--muted-2)] tabular-nums">
+                    {((1 - m.middleProbability) * 100).toFixed(1)}% chance
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[var(--muted-2)]">Lands between</p>
+                  <p className="font-semibold tabular-nums">
+                    {m.gapFrom} – {m.gapTo}
+                  </p>
+                  <p className="text-[0.6rem] text-[var(--muted-2)]">
+                    outlay {formatMoney(m.outlay)}
+                  </p>
+                </div>
+              </div>
+
+              {m.riskFree && (
+                <p className="mt-1.5 text-[0.68rem] text-green-300">
+                  Unusually, missing the middle still returns more than the
+                  outlay — the two prices arbitrage on their own and the band
+                  is pure upside.
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
 
   if (slips.length === 0) {
     return (
@@ -112,6 +241,7 @@ export function ArbBuilder({ rec }: { rec: SgpRecommendation }) {
             </p>
           </>
         )}
+        {middleSection}
       </div>
     );
   }
@@ -278,6 +408,8 @@ export function ArbBuilder({ rec }: { rec: SgpRecommendation }) {
           </div>
         ))}
       </div>
+
+      {middleSection}
 
       <div className="mt-3 rounded-lg border-l-4 border-l-amber-400 bg-amber-500/5 px-2.5 py-2 text-[0.68rem] leading-relaxed text-amber-100">
         <strong>What can still go wrong.</strong> The guarantee holds only if

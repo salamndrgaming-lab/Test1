@@ -608,7 +608,7 @@ export interface SgpRecommendation {
       stakeShareA: number;
     }[];
     middles: {
-      market: string;
+      market: "spread" | "total";
       lowSide: { label: string; book: string; american: number; line: number };
       highSide: { label: string; book: string; american: number; line: number };
       gapFrom: number;

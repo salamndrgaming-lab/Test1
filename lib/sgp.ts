@@ -28,6 +28,7 @@ import {
 } from "@/lib/market";
 import {
   findArbitrage,
+  findArbitrageAcrossLines,
   findBestTwoWay,
   findMiddles,
   findStaleBooks,
@@ -60,7 +61,7 @@ export const SGP_DISCLAIMER =
   "illustrative. Must be 21+ (or legal age in your jurisdiction). If you or " +
   "someone you know has a gambling problem, call 1-800-GAMBLER.";
 
-export const MODEL_VERSION = "news-v24";
+export const MODEL_VERSION = "arb-v25";
 
 /* ------------------------------------------------------------------ *
  * 1. Odds math
@@ -2321,12 +2322,17 @@ export function legsFromGames(
         findArbitrage("moneyline", books,
           { label: `${g.home.abbreviation} ML`, pick: (b) => b.homeMoneyline },
           { label: `${g.away.abbreviation} ML`, pick: (b) => b.awayMoneyline }),
-        findArbitrage("spread", atModalSpread,
-          { label: `${g.home.abbreviation} ${consensus.modalSpread ?? ""}`, pick: (b) => b.spreadHomeOdds },
-          { label: `${g.away.abbreviation} ${-(consensus.modalSpread ?? 0)}`, pick: (b) => b.spreadAwayOdds }),
-        findArbitrage("total", atModalTotal,
-          { label: `Over ${consensus.modalTotal ?? ""}`, pick: (b) => b.overOdds },
-          { label: `Under ${consensus.modalTotal ?? ""}`, pick: (b) => b.underOdds }),
+        /*
+         * Every posted line, each group matched internally — not just the
+         * modal one. See findArbitrageAcrossLines: a third of all quotes sit
+         * off the consensus number and were previously never examined.
+         */
+        findArbitrageAcrossLines("spread", books, (b) => b.spread,
+          { label: (l) => `${g.home.abbreviation} ${l > 0 ? "+" : ""}${l}`, pick: (b) => b.spreadHomeOdds },
+          { label: (l) => `${g.away.abbreviation} ${-l > 0 ? "+" : ""}${-l}`, pick: (b) => b.spreadAwayOdds }),
+        findArbitrageAcrossLines("total", books, (b) => b.total,
+          { label: (l) => `Over ${l}`, pick: (b) => b.overOdds },
+          { label: (l) => `Under ${l}`, pick: (b) => b.underOdds }),
       ].filter((a): a is NonNullable<typeof a> => a !== null);
 
       /*

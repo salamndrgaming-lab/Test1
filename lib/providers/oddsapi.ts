@@ -62,23 +62,68 @@ export const CACHE_TTL_MS = 20 * 60 * 1000;
  * data the feature actually depends on.
  */
 export const ADAPTIVE_TTL: { withinHours: number; ttlMinutes: number }[] = [
-  { withinHours: 2, ttlMinutes: 8 },
-  { withinHours: 6, ttlMinutes: 30 },
-  { withinHours: 24, ttlMinutes: 90 },
-  { withinHours: Infinity, ttlMinutes: 240 },
+  { withinHours: 2, ttlMinutes: 12 },
+  { withinHours: 6, ttlMinutes: 45 },
+  { withinHours: 24, ttlMinutes: 150 },
+  { withinHours: Infinity, ttlMinutes: 360 },
 ];
 
-/** TTL for a league whose next game starts in `hoursToFirstGame`. */
-export function ttlMsFor(hoursToFirstGame: number | null): number {
+/**
+ * Daily spend the bands are tuned for, in credits.
+ *
+ * Observed burn on the live app was about 49 credits a day against a 500
+ * monthly allowance — comfortable for ten days and then nothing. This is the
+ * rate the base TTLs above are meant to produce; the stretch below defends
+ * it when traffic says otherwise.
+ */
+export const COMFORTABLE_DAILY_CREDITS = 30;
+
+/** Most the TTL may be stretched when the budget is tight. */
+const MAX_STRETCH = 4;
+
+/**
+ * How much to lengthen the cache given what is left in the month.
+ *
+ * A fixed TTL cannot defend a monthly budget, because it does not know how
+ * much traffic is arriving: raise it once and a busier week drains the
+ * allowance anyway. This closes the loop. When the credits left per
+ * remaining day fall below what the bands assume, the cache stretches in
+ * proportion, and relaxes again after the monthly reset.
+ *
+ * Running out matters more than it sounds. With one book, "consensus fair
+ * value" is that book's own de-vigged price, so price edge becomes
+ * arithmetically impossible rather than merely rare and arbitrage detection
+ * stops entirely — every measured thing this tool does goes dark at once.
+ * Degrading freshness is much cheaper than degrading to a single source.
+ */
+export function budgetStretch(
+  remaining: number | null,
+  daysLeft = daysLeftInMonth(),
+): number {
+  if (remaining == null || !Number.isFinite(remaining) || remaining <= 0) return 1;
+  const perDay = remaining / Math.max(1, daysLeft);
+  if (perDay >= COMFORTABLE_DAILY_CREDITS) return 1;
+  return Math.min(MAX_STRETCH, COMFORTABLE_DAILY_CREDITS / Math.max(1, perDay));
+}
+
+/**
+ * TTL for a league whose next game starts in `hoursToFirstGame`, stretched
+ * by whatever the month's remaining budget can afford.
+ */
+export function ttlMsFor(
+  hoursToFirstGame: number | null,
+  remaining: number | null = null,
+): number {
+  const stretch = budgetStretch(remaining);
   if (hoursToFirstGame == null || !Number.isFinite(hoursToFirstGame)) {
-    return CACHE_TTL_MS;
+    return CACHE_TTL_MS * stretch;
   }
   // Already underway or imminent: the shortest window.
   const h = Math.max(0, hoursToFirstGame);
   for (const band of ADAPTIVE_TTL) {
-    if (h <= band.withinHours) return band.ttlMinutes * 60 * 1000;
+    if (h <= band.withinHours) return band.ttlMinutes * 60 * 1000 * stretch;
   }
-  return CACHE_TTL_MS;
+  return CACHE_TTL_MS * stretch;
 }
 
 /**
@@ -302,7 +347,7 @@ async function fetchLeague(
   signal: AbortSignal,
   hoursToFirstGame: number | null,
 ): Promise<OddsApiEvent[]> {
-  const ttl = ttlMsFor(hoursToFirstGame);
+  const ttl = ttlMsFor(hoursToFirstGame, remainingCredits);
   const cached = cache.get(league);
   if (cached && Date.now() - cached.at < ttl) return cached.events;
 

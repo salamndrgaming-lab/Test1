@@ -2,7 +2,14 @@
 
 import { useMemo, useState } from "react";
 import type { SgpRecommendation } from "@/types";
-import { buildArbSlips, buildMiddleSlips } from "@/lib/arbitrage";
+import {
+  buildArbSlips,
+  buildMiddleSlips,
+  summarisePortfolio,
+  middleKelly,
+  bookCoverage,
+  MAX_POSITION_FRACTION,
+} from "@/lib/arbitrage";
 import { formatMoney, formatOdds, classNames } from "@/lib/format";
 
 /**
@@ -57,6 +64,20 @@ export function ArbBuilder({ rec }: { rec: SgpRecommendation }) {
     [rec.opportunities, stake, unit],
   );
 
+  /*
+   * What it costs to take everything. Each slip above is priced at the full
+   * stake independently, which is right for one and misleading for several:
+   * three arbitrages each shown "at $200" need $600.
+   */
+  const portfolio = useMemo(
+    () => summarisePortfolio(slips, middles),
+    [slips, middles],
+  );
+  const coverage = useMemo(
+    () => bookCoverage(slips, middles).slice(0, 4),
+    [slips, middles],
+  );
+
   const live = slips.filter((s) => s.stillArbitrage);
   const roundedAway = slips.filter((s) => !s.stillArbitrage);
 
@@ -71,6 +92,80 @@ export function ArbBuilder({ rec }: { rec: SgpRecommendation }) {
     [rec.opportunities],
   );
 
+
+
+  const portfolioSection =
+    portfolio.arbCount + portfolio.middleCount < 2 ? null : (
+      <div className="mt-3 rounded-xl border border-[var(--border)] p-2.5">
+        <p className="mb-1.5 text-[0.7rem] font-semibold text-[var(--text)]">
+          Taking all of it
+        </p>
+        <p className="mb-2 text-[0.65rem] leading-relaxed text-[var(--muted)]">
+          Each slip above is priced at your full stake on its own. Placing
+          several costs the sum, not the stake — this is what the whole board
+          actually needs.
+        </p>
+        <div className="grid grid-cols-2 gap-2 text-[0.7rem] sm:grid-cols-4">
+          <div>
+            <p className="text-[var(--muted-2)]">Total outlay</p>
+            <p className="font-semibold tabular-nums">
+              {formatMoney(portfolio.totalOutlay)}
+            </p>
+          </div>
+          {portfolio.arbCount > 0 && (
+            <div>
+              <p className="text-[var(--muted-2)]">
+                {portfolio.arbCount} arb{portfolio.arbCount === 1 ? "" : "s"} —
+                guaranteed
+              </p>
+              <p className="font-semibold tabular-nums text-good">
+                {formatMoney(portfolio.arbGuaranteed)}
+              </p>
+              <p className="text-[0.6rem] text-[var(--muted-2)] tabular-nums">
+                {(portfolio.arbReturn * 100).toFixed(2)}% on{" "}
+                {formatMoney(portfolio.arbOutlay)}
+              </p>
+            </div>
+          )}
+          {portfolio.middleCount > 0 && (
+            <>
+              <div>
+                <p className="text-[var(--muted-2)]">
+                  {portfolio.middleCount} middle
+                  {portfolio.middleCount === 1 ? "" : "s"} — expected
+                </p>
+                <p className="font-semibold tabular-nums">
+                  {formatMoney(portfolio.middleExpected)}
+                </p>
+              </div>
+              <div>
+                <p className="text-[var(--muted-2)]">If every middle misses</p>
+                <p className="font-semibold tabular-nums text-bad">
+                  {formatMoney(portfolio.middleWorstCase)}
+                </p>
+              </div>
+            </>
+          )}
+        </div>
+        {portfolio.arbCount > 0 && portfolio.middleCount > 0 && (
+          <p className="mt-1.5 text-[0.62rem] leading-relaxed text-[var(--muted-2)]">
+            The two are not added together. One is guaranteed and the other is
+            an average over outcomes; a single combined figure would be
+            neither.
+          </p>
+        )}
+        {coverage.length > 0 && (
+          <p className="mt-1.5 text-[0.65rem] leading-relaxed text-[var(--muted-2)]">
+            <span className="text-[var(--muted)]">Accounts needed:</span>{" "}
+            {coverage
+              .map((c) => `${c.book} (${c.appearances})`)
+              .join(", ")}
+            . Every one of these needs two books at once, so the account that
+            appears most is the one that unlocks the most of this board.
+          </p>
+        )}
+      </div>
+    );
 
   /* Shared by both the empty and the populated state. */
   const middleSection =
@@ -167,6 +262,32 @@ export function ArbBuilder({ rec }: { rec: SgpRecommendation }) {
                 </div>
               </div>
 
+              {(() => {
+                const k = middleKelly(m);
+                if (!k) return null;
+                return (
+                  <p className="mt-1.5 text-[0.65rem] leading-relaxed text-[var(--muted-2)]">
+                    Sizing: risk about{" "}
+                    <span className="font-semibold text-[var(--text)] tabular-nums">
+                      {(k.recommended * 100).toFixed(1)}%
+                    </span>{" "}
+                    of bankroll.{" "}
+                    {k.capped ? (
+                      <>
+                        Kelly itself says {k.fraction.toFixed(1)}× bankroll —
+                        the two legs barely lose when this misses, so the
+                        formula sees almost no downside. It assumes the{" "}
+                        {(m.middleProbability * 100).toFixed(1)}% is exact;
+                        ours is a model estimate, so this is capped at{" "}
+                        {(MAX_POSITION_FRACTION * 100).toFixed(0)}%.
+                      </>
+                    ) : (
+                      <>Half-Kelly on the exact band probability.</>
+                    )}
+                  </p>
+                );
+              })()}
+
               {m.riskFree && (
                 <p className="mt-1.5 text-[0.68rem] text-green-300">
                   Unusually, missing the middle still returns more than the
@@ -242,6 +363,7 @@ export function ArbBuilder({ rec }: { rec: SgpRecommendation }) {
           </>
         )}
         {middleSection}
+        {portfolioSection}
       </div>
     );
   }
@@ -410,6 +532,7 @@ export function ArbBuilder({ rec }: { rec: SgpRecommendation }) {
       </div>
 
       {middleSection}
+      {portfolioSection}
 
       <div className="mt-3 rounded-lg border-l-4 border-l-amber-400 bg-amber-500/5 px-2.5 py-2 text-[0.68rem] leading-relaxed text-amber-100">
         <strong>What can still go wrong.</strong> The guarantee holds only if

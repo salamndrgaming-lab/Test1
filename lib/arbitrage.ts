@@ -698,3 +698,148 @@ export function buildMiddleSlips(
   }
   return [...best.values()].sort((a, b) => b.expectedValue - a.expectedValue);
 }
+
+/* ------------------------------------------------------------------ *
+ * Portfolio view
+ * ------------------------------------------------------------------ */
+
+/**
+ * What it actually costs to take everything on the board.
+ *
+ * Each slip is priced independently at the stake you asked for, which is the
+ * right way to show ONE of them and quietly misleading about several: three
+ * arbitrages each displayed "at $200" need $600 of capital, not $200, and
+ * their profits only add up if you have all $600. Nothing said so.
+ *
+ * Arbitrage profit is guaranteed and simply adds. Middles are kept apart and
+ * reported as expectation, because adding a guaranteed return to an expected
+ * one produces a number that is neither.
+ */
+export interface OpportunityPortfolio {
+  arbCount: number;
+  middleCount: number;
+  /** Capital needed to place every arbitrage shown. */
+  arbOutlay: number;
+  /** Profit from those, whatever happens. */
+  arbGuaranteed: number;
+  /** Return on the arbitrage capital. */
+  arbReturn: number;
+  /** Capital needed to place every middle shown. */
+  middleOutlay: number;
+  /** Expected — not guaranteed — profit from the middles. */
+  middleExpected: number;
+  /** Worst case across the middles: every one of them misses. */
+  middleWorstCase: number;
+  /** Everything together. */
+  totalOutlay: number;
+}
+
+export function summarisePortfolio(
+  arbs: ArbSlip[],
+  middles: MiddleSlip[],
+): OpportunityPortfolio {
+  const placeable = arbs.filter((a) => a.stillArbitrage);
+  const round2 = (x: number) => Number(x.toFixed(2));
+  const arbOutlay = placeable.reduce((s, a) => s + a.outlay, 0);
+  const arbGuaranteed = placeable.reduce((s, a) => s + a.worstProfit, 0);
+  const middleOutlay = middles.reduce((s, m) => s + m.outlay, 0);
+  return {
+    arbCount: placeable.length,
+    middleCount: middles.length,
+    arbOutlay: round2(arbOutlay),
+    arbGuaranteed: round2(arbGuaranteed),
+    arbReturn: arbOutlay > 0 ? Number((arbGuaranteed / arbOutlay).toFixed(4)) : 0,
+    middleOutlay: round2(middleOutlay),
+    middleExpected: round2(middles.reduce((s, m) => s + m.expectedProfit, 0)),
+    // Middles are independent enough that all missing is possible, and it is
+    // the number worth knowing before placing six of them.
+    middleWorstCase: round2(middles.reduce((s, m) => s + m.missProfit, 0)),
+    totalOutlay: round2(arbOutlay + middleOutlay),
+  };
+}
+
+/**
+ * Kelly stake for a middle, from the exact probability.
+ *
+ * A middle is a positive-expectation bet with a negative most-likely
+ * outcome, so "how much" is a real question and flat-staking it is a guess.
+ * For a bet risking one unit to win `b` with probability p and lose `a`
+ * otherwise, the growth-optimal fraction is (p·b − q·a) / (a·b).
+ *
+ * Reported as a fraction of bankroll alongside the half-Kelly figure, which
+ * is what most people should actually use: it gives up a quarter of the
+ * growth for a large reduction in variance, and these edges are small enough
+ * that an error in the probability hurts more than the lost growth.
+ */
+/**
+ * A practical ceiling on any single position, as a fraction of bankroll.
+ *
+ * Kelly routinely recommends enormous stakes on a middle and it is not
+ * wrong to: two legs at -110 only lose about 4.5% of the outlay when the
+ * middle misses, so the formula sees a tiny downside and sizes against it,
+ * returning fractions above 1 — "stake more than you have".
+ *
+ * What the formula assumes is that the probability is EXACT. Ours is a model
+ * estimate from a discrete distribution, and Kelly is famously brutal about
+ * estimate error: overbetting past the optimum loses money faster than
+ * underbetting gives up growth, and the penalty is asymmetric. On edges this
+ * thin the binding constraint is confidence in p, not the arithmetic. So the
+ * recommendation is capped, and the uncapped figure is still shown so the
+ * cap is visibly a judgement rather than a hidden fudge.
+ */
+export const MAX_POSITION_FRACTION = 0.05;
+
+export function middleKelly(slip: MiddleSlip): {
+  /** What Kelly actually says, uncapped. Often above 1. */
+  fraction: number;
+  /** Half-Kelly, the usual variance-reduced version. */
+  halfFraction: number;
+  /** What to actually use: half-Kelly, capped. */
+  recommended: number;
+  /** True when the cap is what is binding, not the formula. */
+  capped: boolean;
+} | null {
+  if (slip.outlay <= 0) return null;
+  const p = slip.middleProbability;
+  const b = slip.middleProfit / slip.outlay;
+  const a = -slip.missProfit / slip.outlay;
+  // A middle that cannot lose is not a Kelly problem; it is an arbitrage.
+  if (!(a > 0) || !(b > 0) || !(p > 0 && p < 1)) return null;
+  const f = (p * b - (1 - p) * a) / (a * b);
+  if (!Number.isFinite(f) || f <= 0) return null;
+  const half = f / 2;
+  const recommended = Math.min(half, MAX_POSITION_FRACTION);
+  return {
+    fraction: Number(f.toFixed(4)),
+    halfFraction: Number(half.toFixed(4)),
+    recommended: Number(recommended.toFixed(4)),
+    capped: half > MAX_POSITION_FRACTION,
+  };
+}
+
+/**
+ * Which books the opportunities actually run through.
+ *
+ * Arbitrage needs two accounts and middles need two accounts, so the useful
+ * question is not "which book is best" but "which account unlocks the most
+ * of this board". Counting appearances answers it directly, and the answer
+ * is usually lopsided — one or two books supply the off-market side of
+ * almost everything.
+ */
+export function bookCoverage(
+  arbs: ArbSlip[],
+  middles: MiddleSlip[],
+): { book: string; appearances: number; share: number }[] {
+  const count = new Map<string, number>();
+  const bump = (b: string) => count.set(b, (count.get(b) ?? 0) + 1);
+  for (const a of arbs) if (a.stillArbitrage) a.legs.forEach((l) => bump(l.book));
+  for (const m of middles) m.legs.forEach((l) => bump(l.book));
+  const total = arbs.filter((a) => a.stillArbitrage).length + middles.length;
+  return [...count.entries()]
+    .map(([book, appearances]) => ({
+      book,
+      appearances,
+      share: total > 0 ? Number((appearances / total).toFixed(3)) : 0,
+    }))
+    .sort((x, y) => y.appearances - x.appearances);
+}

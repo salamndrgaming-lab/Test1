@@ -265,6 +265,36 @@ export interface EspnData {
   gameLinks: Record<string, string>;
 }
 
+/**
+ * Leagues whose scoreboard needs an explicit date window.
+ *
+ * The football endpoints return a whole WEEK by default, which is why
+ * college games five days out appear without asking. The daily sports do
+ * not: they return ESPN's current "sports day", and that day does not roll
+ * over at midnight — it rolls when the previous night's games finish being
+ * processed. The practical effect was that at 10am Eastern the NBA, NHL and
+ * college basketball slates were still YESTERDAY'S, every game `final`, so
+ * they were filtered out of the slip as completed and never appeared at all.
+ * Every one of those sports was silently missing from the whole tool.
+ *
+ * Asking for today through tomorrow fixes it and costs nothing: ESPN's
+ * scoreboard is keyless and a range is one request, the same as a day.
+ */
+const NEEDS_DATE_WINDOW = new Set<League>(["NBA", "NHL", "NCAAB", "MLB"]);
+
+/**
+ * The scoreboard URL for a league, with a date window where one is needed.
+ *
+ * Reuses the same Eastern date stamp the results window uses, so the two
+ * cannot drift apart about where a day begins.
+ */
+export function scoreboardUrl(league: League, now = new Date()): string {
+  const base = `https://site.api.espn.com/apis/site/v2/sports/${ESPN_PATH[league]}/scoreboard`;
+  if (!NEEDS_DATE_WINDOW.has(league)) return base;
+  const tomorrow = new Date(now.getTime() + 86_400_000);
+  return `${base}?dates=${easternDateStamp(now)}-${easternDateStamp(tomorrow)}`;
+}
+
 export async function fetchEspn(
   leagues: League[],
   signal: AbortSignal,
@@ -275,10 +305,10 @@ export async function fetchEspn(
 
   const results = await Promise.allSettled(
     leagues.map((league) =>
-      fetchJson<EspnScoreboard>(
-        `https://site.api.espn.com/apis/site/v2/sports/${ESPN_PATH[league]}/scoreboard`,
-        signal,
-      ).then((data) => ({ league, data })),
+      fetchJson<EspnScoreboard>(scoreboardUrl(league), signal).then((data) => ({
+        league,
+        data,
+      })),
     ),
   );
 

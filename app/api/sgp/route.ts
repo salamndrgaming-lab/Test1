@@ -16,7 +16,7 @@ import {
 import { buildAllRatings, linesAsResults, scheduleFromResults } from "@/lib/ratings";
 import { backtest, votesFromBacktest } from "@/lib/backtest";
 import { fetchGameWeather } from "@/lib/providers/gameweather";
-import { fetchOddsApiBooks, oddsApiStatus } from "@/lib/providers/oddsapi";
+import { fetchOddsApiBooks, oddsApiEventId, oddsApiStatus } from "@/lib/providers/oddsapi";
 import {
   buildRecommendation,
   legsFromGames,
@@ -171,9 +171,21 @@ export async function GET() {
     // Report the price-feed state so a missing key is visible in the UI
     // rather than silently degrading to one book.
     const feed = oddsApiStatus();
+    /*
+     * The Odds API's own event id for each priced game, learned while the
+     * slate was matched by team name. Sent to the client so a later props
+     * request carries it, rather than relying on an in-process map that a
+     * different serverless instance would not have.
+     */
+    const propEventIds: Record<string, string> = {};
+    for (const g of priced) {
+      const id = oddsApiEventId(g.id);
+      if (id) propEventIds[g.id] = id;
+    }
     const result: ProviderResult<SgpRecommendation> = {
       data: {
         ...recommendation,
+        propEventIds,
         marketSurvey: {
           ...recommendation.marketSurvey,
           priceFeed: feed.configured

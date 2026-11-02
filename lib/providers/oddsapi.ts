@@ -1,4 +1,5 @@
 import type { BookPrice, Game, League } from "@/types";
+import { isBookmaker } from "@/lib/market";
 
 /**
  * The Odds API — a real multi-bookmaker price feed.
@@ -463,8 +464,175 @@ export async function fetchOddsApiBooks(
     if (!events || events.length === 0) continue;
     const ev = matchEvent(g, events);
     if (!ev) continue;
+    /*
+     * Remember which Odds API event this game matched to. Props are served
+     * only by the per-event endpoint, which is keyed on THEIR id, not
+     * ESPN's — and the match is made here by team name, so this is the one
+     * place that knows the pairing. Recording it means a props request
+     * costs one call for the props rather than a call to rediscover the id.
+     */
+    if (ev.id) eventIdByGame.set(g.id, ev.id);
     const books = parseEventBooks(ev, g.home.name, g.away.name);
     if (books.length > 0) out[g.id] = books;
   }
   return out;
+}
+
+/**
+ * Our game id -> The Odds API's event id, learned while matching the slate.
+ *
+ * In-process only, which is the honest limit: on a cold serverless instance
+ * it is empty and a props request has to say so rather than guess at an id.
+ */
+const eventIdByGame = new Map<string, string>();
+
+/** The Odds API event id for one of our games, if the slate matched it. */
+export function oddsApiEventId(gameId: string): string | undefined {
+  return eventIdByGame.get(gameId);
+}
+
+/* ------------------------------------------------------------------ *
+ * Player props — fetched per game, only when asked for
+ * ------------------------------------------------------------------ */
+
+/**
+ * Prop markets worth asking for, per sport.
+ *
+ * Kept deliberately short. Props are billed per market per region PER EVENT,
+ * not per league, so this list is the per-click price: four markets is four
+ * credits for one game, against three credits for a whole league's main
+ * lines. That asymmetry is why props are never fetched with the slate and
+ * only ever on an explicit request.
+ */
+export const PROP_MARKETS: Record<League, string[]> = {
+  NBA: ["player_points", "player_rebounds", "player_assists", "player_threes"],
+  NCAAB: ["player_points", "player_rebounds", "player_assists"],
+  NFL: ["player_pass_yds", "player_rush_yds", "player_reception_yds", "player_receptions"],
+  NCAAF: ["player_pass_yds", "player_rush_yds", "player_reception_yds"],
+  NHL: ["player_points", "player_shots_on_goal"],
+  MLB: ["batter_hits", "batter_home_runs", "pitcher_strikeouts"],
+};
+
+/** What one game's props will cost, so the cost can be shown before it is paid. */
+export function propCreditCost(league: League): number {
+  return (PROP_MARKETS[league] ?? []).length; // one region
+}
+
+export interface PropOutcome {
+  book: string;
+  /** The player the line is about. */
+  player: string;
+  /** e.g. "player_points". */
+  market: string;
+  /** "Over" or "Under". */
+  side: string;
+  line: number;
+  american: number;
+}
+
+/** Props cache, keyed by event. Separate from the slate cache by design. */
+const propCache = new Map<string, { at: number; props: PropOutcome[] }>();
+/** Props move less than sides do, and cost far more, so they are held longer. */
+const PROP_TTL_MS = 30 * 60 * 1000;
+
+interface PropApiEvent {
+  bookmakers?: {
+    key?: string;
+    title?: string;
+    markets?: {
+      key?: string;
+      outcomes?: { name?: string; description?: string; price?: number; point?: number }[];
+    }[];
+  }[];
+}
+
+/**
+ * Player props for ONE game.
+ *
+ * Deliberately not part of the slate fetch. The per-event endpoint is the
+ * only one that serves props, and it bills per market per event: pulling
+ * four markets across a twenty-game board would cost eighty credits against
+ * the three a whole league's main lines cost, which would drain a monthly
+ * allowance in a couple of refreshes.
+ *
+ * So this is on-demand, cached for half an hour, and sits behind the same
+ * pacing reserve as everything else — a props request cannot eat the budget
+ * that keeps the main board alive, because the main board is where the
+ * measured edge actually is.
+ */
+export async function fetchEventProps(
+  league: League,
+  eventId: string,
+  signal?: AbortSignal,
+): Promise<{ props: PropOutcome[]; cost: number; reason?: string }> {
+  const apiKey = process.env.ODDS_API_KEY;
+  if (!apiKey) return { props: [], cost: 0, reason: "no-key" };
+
+  const markets = PROP_MARKETS[league] ?? [];
+  if (markets.length === 0) return { props: [], cost: 0, reason: "unsupported-league" };
+
+  const key = `${league}:${eventId}`;
+  const cached = propCache.get(key);
+  if (cached && Date.now() - cached.at < PROP_TTL_MS) {
+    return { props: cached.props, cost: 0 };
+  }
+
+  // The same reserve that protects the slate. Props are the first thing to
+  // go when the month is tight, because they are the least proven thing here.
+  if (remainingCredits != null) {
+    const paceReserve = daysLeftInMonth() * DAILY_FLOOR_CREDITS;
+    if (
+      remainingCredits < MIN_REMAINING_CREDITS ||
+      remainingCredits < paceReserve + markets.length
+    ) {
+      return { props: cached?.props ?? [], cost: 0, reason: "budget" };
+    }
+  }
+
+  const sport = SPORT_KEYS[league];
+  if (!sport) return { props: [], cost: 0, reason: "unsupported-league" };
+  const url =
+    `https://api.the-odds-api.com/v4/sports/${sport}/events/${encodeURIComponent(eventId)}/odds` +
+    `?apiKey=${encodeURIComponent(apiKey)}` +
+    `&regions=${REGIONS}&markets=${encodeURIComponent(markets.join(","))}` +
+    `&oddsFormat=american&dateFormat=iso`;
+
+  const res = await fetch(url, {
+    signal,
+    next: { revalidate: Math.floor(PROP_TTL_MS / 1000) },
+  });
+  const rem = Number(res.headers.get("x-requests-remaining"));
+  const used = Number(res.headers.get("x-requests-used"));
+  const last = Number(res.headers.get("x-requests-last"));
+  if (Number.isFinite(rem)) remainingCredits = rem;
+  if (Number.isFinite(used)) usedCredits = used;
+
+  if (!res.ok) {
+    return {
+      props: cached?.props ?? [],
+      cost: 0,
+      reason: res.status === 422 ? "no-props-for-this-game" : `http-${res.status}`,
+    };
+  }
+
+  const json = (await res.json()) as PropApiEvent;
+  const out: PropOutcome[] = [];
+  for (const bk of json.bookmakers ?? []) {
+    const book = bk.title || bk.key || "";
+    if (!book || !isBookmaker(book)) continue;
+    for (const m of bk.markets ?? []) {
+      if (!m.key) continue;
+      for (const o of m.outcomes ?? []) {
+        // The API puts the PLAYER in `description` and Over/Under in `name`.
+        const player = (o.description ?? "").trim();
+        const side = (o.name ?? "").trim();
+        if (!player || !side) continue;
+        if (o.price == null || o.point == null) continue;
+        if (!Number.isFinite(o.price) || !Number.isFinite(o.point)) continue;
+        out.push({ book, player, market: m.key, side, line: o.point, american: o.price });
+      }
+    }
+  }
+  propCache.set(key, { at: Date.now(), props: out });
+  return { props: out, cost: Number.isFinite(last) ? last : markets.length };
 }

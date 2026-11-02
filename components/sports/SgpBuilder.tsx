@@ -5,6 +5,7 @@ import type { PlatformSlip, SgpRecommendation } from "@/types";
 import { PickCard } from "./PickCard";
 import { ArbBuilder } from "./ArbBuilder";
 import { GameSim } from "./GameSim";
+import { PropsPanel } from "./PropsPanel";
 import { SgpChat } from "./SgpChat";
 import { DisclaimerBanner } from "@/components/layout/DisclaimerBanner";
 import { calculatePayout } from "@/lib/sgp";
@@ -338,6 +339,8 @@ export function SgpBuilder({ rec }: { rec: SgpRecommendation }) {
       <SgpChat rec={rec} />
 
       <GameSim rec={rec} />
+
+      <PropsPanel rec={rec} />
 
       {/*
         * Risk-free edge first, because it is the only thing here that does

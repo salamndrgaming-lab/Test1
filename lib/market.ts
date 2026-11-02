@@ -223,6 +223,23 @@ function collect(
  * "no market" from "a market with no edge" — those mean different things.
  */
 export function buildConsensus(quotes: Quote[]): ConsensusMarket {
+  /*
+   * Guard here as well as in `collect`, because this is a public entry
+   * point and callers reach it directly — the props route builds its own
+   * two-way quotes from a different endpoint and would otherwise bypass
+   * every protection the main board has.
+   *
+   * The same two failures apply: an exchange quoting in a different
+   * notation (MATCHBOOK's 9.0 and -28.0 were not American odds at all, and
+   * manufactured a 15% risk-free arbitrage), and prices that cannot be
+   * American. Filtering twice costs nothing; missing it once invents edge.
+   */
+  quotes = quotes.filter(
+    (q) =>
+      isBookmaker(q.book) &&
+      isPlausibleAmerican(q.home) &&
+      isPlausibleAmerican(q.away),
+  );
   if (quotes.length === 0) return { shopped: false };
 
   // De-vig each book on its own terms first. Pooling raw prices across books

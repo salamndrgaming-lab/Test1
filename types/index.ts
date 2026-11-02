@@ -525,6 +525,13 @@ export interface SgpRecommendation {
    * when only one book was surveyed, since there is nothing to choose between.
    */
   platforms?: PlatformSlip[];
+  /**
+   * Our game id -> The Odds API's event id, for the games it priced.
+   *
+   * Props are served only by their per-event endpoint, keyed on their id.
+   * Carrying it here means a props request costs one call rather than two.
+   */
+  propEventIds?: Record<string, string>;
   combinedDecimalOdds: number;
   combinedAmericanOdds: number;
   /** Break-even probability implied by the combined price. */

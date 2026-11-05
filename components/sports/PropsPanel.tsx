@@ -161,7 +161,8 @@ export function PropsPanel({ rec }: { rec: SgpRecommendation }) {
         than per league. There is no model probability on a prop: the model
         has no player-level distribution and will not pretend otherwise.
         These are priced the way the main board is, on disagreement between
-        books.
+        books. The simulator can take a points market further: not a
+        probability of its own, but how the prop moves with the game total.
       </p>
 
       <div className="mb-3 flex flex-wrap items-end gap-2">

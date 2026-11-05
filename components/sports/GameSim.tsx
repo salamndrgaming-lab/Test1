@@ -12,6 +12,15 @@ import {
   type SimResult,
   type SimSummary,
 } from "@/lib/gameSim";
+import {
+  prepareProps,
+  simulateProps,
+  totalMoments,
+  isScoringComponent,
+  type PricedPropLine,
+  type PropSimResult,
+  type PropDecline,
+} from "@/lib/propSim";
 import { classNames } from "@/lib/format";
 
 /**
@@ -27,6 +36,12 @@ import { classNames } from "@/lib/format";
  * player in it. The path drawn across the venue is interpolation between
  * zero and a sampled FINAL score, and the panel says so rather than letting
  * a moving dot imply a possession simulation that does not exist.
+ *
+ * Player props ride along on the same draws when the game has them. Their
+ * marginals are the market's, fitted from the several lines books post for
+ * the same player; what the simulation adds is the CO-MOVEMENT, which is the
+ * one part of a same-game slip a posted price cannot tell you. See
+ * lib/propSim.ts for why that works for points and is refused for rebounds.
  */
 
 const RUN_OPTIONS = [1000, 10000, 50000];
@@ -109,6 +124,7 @@ function Venue({
 
 export function GameSim({ rec }: { rec: SgpRecommendation }) {
   const pool = rec.candidates.length ? rec.candidates : rec.legs;
+  const eventIds = useMemo(() => rec.propEventIds ?? {}, [rec.propEventIds]);
 
   /** One entry per game that can actually be simulated. */
   const games = useMemo(() => {
@@ -134,9 +150,23 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
   const [results, setResults] = useState<SimResult[]>([]);
   const [running, setRunning] = useState(false);
   const [latest, setLatest] = useState<SimResult | null>(null);
+  /*
+   * The finished run, kept separately from the accumulating one. The props
+   * pass is tens of thousands of draws per player; running it on every
+   * animation frame would stall the browser to recompute a number that is
+   * only meaningful once the run is complete.
+   */
+  const [completed, setCompleted] = useState<SimResult[]>([]);
   const frame = useRef<number | null>(null);
 
-  const game = games.find((g) => g.gameId === gameId) ?? games[0] ?? null;
+  const [props, setProps] = useState<PricedPropLine[] | null>(null);
+  const [propBusy, setPropBusy] = useState(false);
+  const [propNote, setPropNote] = useState<string | null>(null);
+
+  const game = useMemo(
+    () => games.find((g) => g.gameId === gameId) ?? games[0] ?? null,
+    [games, gameId],
+  );
 
   // Stop a run in flight if the component goes away.
   useEffect(() => () => { if (frame.current) cancelAnimationFrame(frame.current); }, []);
@@ -151,8 +181,11 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
     if (frame.current) { cancelAnimationFrame(frame.current); frame.current = null; }
     setRunning(false);
     setResults([]);
+    setCompleted([]);
     setLatest(null);
     setGameId(id);
+    setProps(null);
+    setPropNote(null);
   };
 
   const start = useCallback(() => {
@@ -161,6 +194,7 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
     const rnd = seededRandom(Date.now() & 0xffffffff);
     const acc: SimResult[] = [];
     setResults([]);
+    setCompleted([]);
     setRunning(true);
 
     const step = () => {
@@ -173,6 +207,7 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
         frame.current = requestAnimationFrame(step);
       } else {
         setRunning(false);
+        setCompleted(acc.slice());
         frame.current = null;
       }
     };
@@ -187,6 +222,75 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
     () => (results.length && game ? checkMarkets(results, game.legs) : []),
     [results, game],
   );
+
+  /*
+   * Props are only offered where the decomposition is sound — a points
+   * market in a league whose scoreboard counts points. Everywhere else the
+   * button would spend credits to fetch lines this cannot do anything
+   * honest with, so it is not shown at all.
+   */
+  const propsAvailable =
+    game != null &&
+    eventIds[game.gameId] != null &&
+    isScoringComponent(game.league, "player_points");
+
+  const loadProps = async () => {
+    if (!game || propBusy) return;
+    setPropBusy(true); setPropNote(null);
+    try {
+      const res = await fetch(
+        `/api/sgp/props?league=${encodeURIComponent(game.league)}` +
+          `&eventId=${encodeURIComponent(eventIds[game.gameId])}`,
+      );
+      const json = await res.json();
+      if (Array.isArray(json.lines) && json.lines.length > 0) {
+        setProps(json.lines as PricedPropLine[]);
+        if (json.creditsUsed === 0) setPropNote("Served from cache — no credits used.");
+      } else {
+        setProps([]);
+        setPropNote(
+          json.error === "budget"
+            ? "Skipped to protect the monthly props budget."
+            : json.error === "no-key"
+              ? "No ODDS_API_KEY configured."
+              : "No books are posting props for this game yet.",
+        );
+      }
+    } catch {
+      setPropNote("Could not reach the props feed.");
+    } finally {
+      setPropBusy(false);
+    }
+  };
+
+  /** The posted total, so "the game went over" means the market's over. */
+  const postedTotal = useMemo(() => {
+    const withLine = (game?.legs ?? []).find((l) => l.modelMeta?.totalLine != null);
+    const posted = withLine?.modelMeta?.totalLine;
+    if (posted != null) return { line: posted, posted: true };
+    return summary ? { line: summary.meanTotal, posted: false } : null;
+  }, [game, summary]);
+
+  const propSim = useMemo(() => {
+    if (!game?.grid || !props?.length || completed.length === 0 || !postedTotal) {
+      return null;
+    }
+    const agg = totalMoments(game.grid);
+    const { inputs, declined } = prepareProps(game.league, props, agg.mean, agg.sd);
+    const totals = completed.map((r) => r.homeScore + r.awayScore);
+    // Seeded off the game and the run length, so the residual noise is
+    // reproducible: the same finished run gives the same prop table twice.
+    let seed = 0x5bf03635 ^ completed.length;
+    for (let i = 0; i < game.gameId.length; i++) {
+      seed = (seed * 31 + game.gameId.charCodeAt(i)) & 0x7fffffff;
+    }
+    const rnd = seededRandom(seed);
+    return {
+      rows: simulateProps(inputs, totals, agg.mean, postedTotal.line, rnd),
+      declined,
+      agg,
+    };
+  }, [game, props, completed, postedTotal]);
 
   if (games.length === 0) {
     return (
@@ -423,8 +527,154 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
               </p>
             </div>
           )}
+
+          {propsAvailable && (
+            <div className="mt-3 border-t border-[var(--border)] pt-2.5">
+              <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+                <p className="text-[0.7rem] font-semibold text-[var(--text)]">
+                  Player props on these same runs
+                </p>
+                {props == null && (
+                  <button
+                    onClick={loadProps}
+                    disabled={propBusy}
+                    className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[0.65rem] text-[var(--muted)] hover:border-[var(--accent)]/50 disabled:opacity-40"
+                  >
+                    {propBusy ? "Loading…" : "Load props"}
+                  </button>
+                )}
+              </div>
+              <p className="mb-2 text-[0.65rem] leading-relaxed text-[var(--muted-2)]">
+                A prop&apos;s own probability here is the market&apos;s, fitted
+                from the several lines books post for the same player — the
+                model has no player distribution and still does not pretend
+                to. What the run adds is how the prop moves WITH the game,
+                which no single posted price can tell you.
+              </p>
+              {propNote && (
+                <p className="mb-2 text-[0.65rem] text-[var(--muted)]">{propNote}</p>
+              )}
+
+              {propSim && propSim.rows.length > 0 && postedTotal && (
+                <>
+                  <div className="max-h-80 overflow-y-auto">
+                    <table className="w-full text-[0.7rem]">
+                      <thead className="sticky top-0 bg-[var(--surface)]">
+                        <tr className="text-[0.6rem] uppercase tracking-wide text-[var(--muted-2)]">
+                          <th className="pb-1 text-left font-medium">Player</th>
+                          <th className="pb-1 text-right font-medium">Over</th>
+                          <th className="pb-1 text-right font-medium">Hits</th>
+                          <th className="pb-1 text-right font-medium">If over {postedTotal.line}</th>
+                          <th className="pb-1 text-right font-medium">If under</th>
+                          <th className="pb-1 text-right font-medium">ρ</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {propSim.rows.map((r: PropSimResult) => (
+                          <tr key={`${r.player}|${r.market}`} className="border-t border-[var(--border)]">
+                            <td className="py-1 pr-2 truncate">{r.player}</td>
+                            <td className="py-1 text-right tabular-nums text-[var(--muted)]">
+                              {r.line}
+                            </td>
+                            <td className="py-1 text-right tabular-nums">
+                              {(r.hitRate * 100).toFixed(1)}%
+                            </td>
+                            <td className="py-1 text-right tabular-nums text-good">
+                              {(r.hitGivenOver * 100).toFixed(1)}%
+                            </td>
+                            <td className="py-1 text-right tabular-nums text-[var(--muted)]">
+                              {(r.hitGivenUnder * 100).toFixed(1)}%
+                            </td>
+                            <td className="py-1 text-right tabular-nums text-[var(--muted-2)]">
+                              {r.rho.toFixed(2)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="mt-1.5 text-[0.62rem] leading-relaxed text-[var(--muted-2)]">
+                    &ldquo;Hits&rdquo; reproduces the de-vigged market price by
+                    construction — it is there as a check, not as a finding;
+                    if it drifted from the posted number the fit would be
+                    broken. The two columns beside it are the output, and the
+                    gap between them is why pairing a scorer&apos;s over with
+                    the game&apos;s over is not two independent bets. ρ is
+                    derived from the player&apos;s fitted spread against the
+                    game total&apos;s, not chosen.{" "}
+                    {postedTotal.posted
+                      ? `Split at the posted total of ${postedTotal.line}.`
+                      : `No total is posted on this game, so the split is at the simulated mean of ${postedTotal.line.toFixed(1)} — a different question from the market's over.`}
+                  </p>
+                </>
+              )}
+
+              {props != null && props.length > 0 && completed.length === 0 && (
+                <p className="text-[0.65rem] text-[var(--muted)]">
+                  {props.length} priced prop{props.length === 1 ? "" : "s"}{" "}
+                  loaded. They are graded on a completed run — let this one
+                  finish, or press Run.
+                </p>
+              )}
+
+              {propSim && propSim.rows.length === 0 && (
+                <p className="text-[0.65rem] leading-relaxed text-[var(--muted)]">
+                  Nothing on this game&apos;s props board can be simulated
+                  honestly — see below for what each one was refused for.
+                </p>
+              )}
+
+              {propSim && propSim.declined.length > 0 && (
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-[0.65rem] text-[var(--muted-2)]">
+                    {propSim.declined.length} prop
+                    {propSim.declined.length === 1 ? "" : "s"} refused, and why
+                  </summary>
+                  <ul className="mt-1 space-y-0.5 text-[0.62rem] leading-relaxed text-[var(--muted-2)]">
+                    {groupDeclines(propSim.declined).map((d) => (
+                      <li key={d.reason}>
+                        <span className="text-[var(--muted)]">{d.count}×</span>{" "}
+                        {d.reason}
+                        {d.examples.length > 0 && (
+                          <span className="text-[var(--muted-2)]">
+                            {" "}— e.g. {d.examples.join(", ")}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="mt-1 text-[0.6rem] leading-relaxed text-[var(--muted-2)]">
+                    These are listed rather than hidden because the players
+                    this can simulate are not a shortlist of the good ones —
+                    they are whichever players two books happened to disagree
+                    about, in a market measured in the same units as the
+                    scoreboard.
+                  </p>
+                </details>
+              )}
+            </div>
+          )}
         </>
       )}
     </div>
   );
+}
+
+/** Collapse the refusals so a board of forty props is readable. */
+function groupDeclines(
+  declined: PropDecline[],
+): { reason: string; count: number; examples: string[] }[] {
+  const by = new Map<string, PropDecline[]>();
+  for (const d of declined) {
+    const g = by.get(d.reason);
+    if (g) g.push(d);
+    else by.set(d.reason, [d]);
+  }
+  return [...by.entries()]
+    .map(([reason, rows]) => ({
+      reason,
+      count: rows.length,
+      examples: rows.slice(0, 3).map((r) => `${r.player} (${r.market.replace(/^player_|^batter_|^pitcher_/, "")})`),
+    }))
+    .sort((a, b) => b.count - a.count);
 }

@@ -97,11 +97,14 @@ export function PropsPanel({ rec }: { rec: SgpRecommendation }) {
             ? "Skipped to protect the monthly budget — the main board's prices come first, because that is where the measured edge is."
             : json.error === "no-key"
               ? "No ODDS_API_KEY configured."
-              : json.error === "no-props-for-this-game"
-                ? "No books are posting props for this game yet."
-                : json.error
-                  ? `Could not load props (${json.error}).`
-                  : "No two books quote the same prop line here, so nothing can be priced.",
+              : json.error === "no-props-for-this-game" ||
+                  json.error === "feed-returned-no-props"
+                ? "The props feed returned nothing for this game — that is its coverage, not a judgement about the game."
+                : json.error === "no-two-books-on-the-same-number"
+                  ? `The feed returned ${json.feed?.outcomes ?? 0} prop prices from ${json.feed?.books ?? 0} book${json.feed?.books === 1 ? "" : "s"}, but no two of them posted the same number for the same player, so nothing here can be priced.`
+                  : json.error
+                    ? `Could not load props (${json.error}).`
+                    : "No two books quote the same prop line here, so nothing can be priced.",
         );
       }
     } catch {

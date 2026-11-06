@@ -248,12 +248,17 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
         if (json.creditsUsed === 0) setPropNote("Served from cache — no credits used.");
       } else {
         setProps([]);
+        const feed = json.feed as
+          | { outcomes: number; books: number }
+          | undefined;
         setPropNote(
           json.error === "budget"
             ? "Skipped to protect the monthly props budget."
             : json.error === "no-key"
               ? "No ODDS_API_KEY configured."
-              : "No books are posting props for this game yet.",
+              : json.error === "no-two-books-on-the-same-number"
+                ? `The feed returned ${feed?.outcomes ?? 0} prop prices from ${feed?.books ?? 0} book${feed?.books === 1 ? "" : "s"}, but no two of them posted the same number for the same player — so nothing here can be priced or fitted.`
+                : "The props feed returned nothing for this game. That is its coverage, not a judgement about the game.",
         );
       }
     } catch {

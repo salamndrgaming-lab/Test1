@@ -133,10 +133,36 @@ export async function GET(req: Request) {
         { status: reason === "no-key" || reason === "budget" ? 503 : 200 },
       );
     }
+    /*
+     * Say WHICH stage came up empty.
+     *
+     * "No props" has three quite different causes and they were all
+     * reported as an empty list: the feed returned nothing for this event
+     * at all, or it returned plenty of lines but no two books landed on the
+     * same number, or the books it returned are ones we do not price. The
+     * first is the feed's coverage, the second is a real finding about this
+     * game's market, and the third is our own filter. Collapsing them cost
+     * an evening of looking in the wrong place.
+     */
+    const lines = priceProps(props);
+    const books = new Set(props.map((p) => p.book));
     return NextResponse.json({
-      lines: priceProps(props),
+      lines,
       creditsUsed: cost,
       markets: PROP_MARKETS[league],
+      feed: {
+        outcomes: props.length,
+        books: books.size,
+        pricedLines: lines.length,
+      },
+      ...(lines.length === 0
+        ? {
+            error:
+              props.length === 0
+                ? "feed-returned-no-props"
+                : "no-two-books-on-the-same-number",
+          }
+        : {}),
     });
   } catch (err) {
     const aborted = err instanceof Error && err.name === "AbortError";

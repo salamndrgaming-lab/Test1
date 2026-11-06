@@ -263,6 +263,8 @@ export interface EspnData {
   odds: MarketOdds[];
   /** id -> public ESPN game summary page */
   gameLinks: Record<string, string>;
+  /** Leagues whose scoreboard request failed, so a gap can be explained. */
+  failedLeagues: League[];
 }
 
 /**
@@ -277,22 +279,31 @@ export interface EspnData {
  * they were filtered out of the slip as completed and never appeared at all.
  * Every one of those sports was silently missing from the whole tool.
  *
- * Asking for today through tomorrow fixes it and costs nothing: ESPN's
- * scoreboard is keyless and a range is one request, the same as a day.
+ * Asking for today AND tomorrow fixes it. It must be two requests, not one
+ * range: `?dates=A-B` is rejected with HTTP 400 by this endpoint in every
+ * sport, football included. Shipping that range is what made this worse
+ * rather than better for a day — the leagues it was meant to rescue stopped
+ * returning anything at all, and the `allSettled` below swallowed the
+ * rejection, so they vanished in silence instead of with an error.
  */
 const NEEDS_DATE_WINDOW = new Set<League>(["NBA", "NHL", "NCAAB", "MLB"]);
 
 /**
- * The scoreboard URL for a league, with a date window where one is needed.
+ * Every scoreboard URL to ask for, for one league.
  *
+ * One plain URL for the football endpoints, which already return a week.
+ * Two single-date URLs for the daily sports, because ESPN rejects a range.
  * Reuses the same Eastern date stamp the results window uses, so the two
  * cannot drift apart about where a day begins.
  */
-export function scoreboardUrl(league: League, now = new Date()): string {
+export function scoreboardUrls(league: League, now = new Date()): string[] {
   const base = `https://site.api.espn.com/apis/site/v2/sports/${ESPN_PATH[league]}/scoreboard`;
-  if (!NEEDS_DATE_WINDOW.has(league)) return base;
+  if (!NEEDS_DATE_WINDOW.has(league)) return [base];
   const tomorrow = new Date(now.getTime() + 86_400_000);
-  return `${base}?dates=${easternDateStamp(now)}-${easternDateStamp(tomorrow)}`;
+  return [
+    `${base}?dates=${easternDateStamp(now)}`,
+    `${base}?dates=${easternDateStamp(tomorrow)}`,
+  ];
 }
 
 export async function fetchEspn(
@@ -304,18 +315,42 @@ export async function fetchEspn(
   const gameLinks: Record<string, string> = {};
 
   const results = await Promise.allSettled(
-    leagues.map((league) =>
-      fetchJson<EspnScoreboard>(scoreboardUrl(league), signal).then((data) => ({
-        league,
-        data,
-      })),
-    ),
+    leagues.map(async (league) => {
+      const boards = await Promise.all(
+        scoreboardUrls(league).map((u) =>
+          fetchJson<EspnScoreboard>(u, signal),
+        ),
+      );
+      return { league, boards };
+    }),
   );
+
+  /*
+   * A league whose request failed is NAMED, not dropped. Silently continuing
+   * past a rejection is how a bad URL hid four whole sports: the board simply
+   * had no basketball on it and nothing anywhere said why.
+   */
+  const failed: League[] = [];
+  for (const [i, r] of results.entries()) {
+    if (r.status === "rejected") {
+      failed.push(leagues[i]);
+      console.warn(
+        `[espn] ${leagues[i]} scoreboard failed, league omitted:`,
+        r.reason instanceof Error ? r.reason.message : r.reason,
+      );
+    }
+  }
+
+  /** ESPN repeats a game across adjacent days; keep the first copy. */
+  const seenEvents = new Set<string>();
 
   for (const r of results) {
     if (r.status !== "fulfilled") continue;
-    const { league, data } = r.value;
-    for (const ev of data.events ?? []) {
+    const { league, boards } = r.value;
+    const events = boards.flatMap((b) => b.events ?? []);
+    for (const ev of events) {
+      if (ev.id && seenEvents.has(ev.id)) continue;
+      if (ev.id) seenEvents.add(ev.id);
       const comp = ev.competitions?.[0];
       const home = comp?.competitors?.find((c) => c.homeAway === "home");
       const away = comp?.competitors?.find((c) => c.homeAway === "away");
@@ -428,7 +463,7 @@ export async function fetchEspn(
     }
   }
 
-  return { games, odds, gameLinks };
+  return { games, odds, gameLinks, failedLeagues: failed };
 }
 
 /* ------------------------------------------------------------------ *
@@ -849,10 +884,16 @@ export function parseCompletedGames(
 /**
  * Completed games over the last `days` for each league.
  *
- * ESPN's scoreboard accepts a date range, which gets a whole window in one
- * request. Ranges aren't honoured uniformly across sports, so if a range
- * comes back looking like a single day we fall back to fetching individual
- * days — capped, because this runs inside a request budget.
+ * One request per day, because that is the only thing this endpoint accepts:
+ * `?dates=A-B` is answered with HTTP 400 in every sport. The previous version
+ * asked for the range first and fell back to daily boards when it "looked
+ * ignored", which meant it paid for a guaranteed 400 on every league of every
+ * request and then did the daily fetch anyway.
+ *
+ * The cap is the honest limit here. `days` is what the caller would like;
+ * MAX_BOARDS is what the request budget allows, and the effective window has
+ * always been the latter — the range it was nominally asking for never
+ * returned a thing.
  */
 export async function fetchResultsWindow(
   leagues: League[],
@@ -861,7 +902,7 @@ export async function fetchResultsWindow(
   now: Date = new Date(),
 ): Promise<CompletedGame[]> {
   const DAY = 86_400_000;
-  const FALLBACK_DAYS = 8;
+  const MAX_BOARDS = 8;
 
   const board = (league: League, dates: string) =>
     fetchJson<EspnScoreboard>(
@@ -871,23 +912,12 @@ export async function fetchResultsWindow(
 
   const perLeague = await Promise.allSettled(
     leagues.map(async (league) => {
-      const from = easternDateStamp(new Date(now.getTime() - days * DAY));
-      const to = easternDateStamp(new Date(now.getTime() - DAY));
-      const ranged = parseCompletedGames(league, [
-        await board(league, `${from}-${to}`),
-      ]);
-
-      // A range that worked spans many dates; one date means it was ignored.
-      const distinctDates = new Set(ranged.map((g) => g.date.slice(0, 10)));
-      if (distinctDates.size > 2) return ranged;
-
-      const stamps = Array.from({ length: FALLBACK_DAYS }, (_, i) =>
-        easternDateStamp(new Date(now.getTime() - (i + 1) * DAY)),
+      const stamps = Array.from(
+        { length: Math.max(1, Math.min(days, MAX_BOARDS)) },
+        (_, i) => easternDateStamp(new Date(now.getTime() - (i + 1) * DAY)),
       );
       const boards = await Promise.all(stamps.map((s) => board(league, s)));
-      const daily = parseCompletedGames(league, boards);
-      // Keep whichever window gave us more to work with.
-      return daily.length >= ranged.length ? daily : ranged;
+      return parseCompletedGames(league, boards);
     }),
   );
 

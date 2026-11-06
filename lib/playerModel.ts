@@ -1,4 +1,6 @@
 import type { PlayerGameLine } from "@/lib/providers/playerlogs";
+import type { League } from "@/types";
+import { fairAmericanOdds } from "@/lib/sgp";
 
 /**
  * A player prop simulated from the player's own games, not from the book.
@@ -21,6 +23,12 @@ import type { PlayerGameLine } from "@/lib/providers/playerlogs";
  * That assumes nothing about shape. It also makes the ceiling obvious: with
  * nine games, the support of the distribution has nine points, and every
  * probability it produces is a multiple of 1/9 before coupling.
+ *
+ * There is NO market input anywhere in this file. The thresholds are chosen
+ * from the player's own simulated distribution, and the odds beside them are
+ * the fair odds for the probability the games imply — not a comparison with
+ * anything posted, and not de-vigged from anyone's price. What a book thinks
+ * is a separate question, asked on a separate panel.
  *
  * Two markets are treated differently, because one can be tied to the game
  * being simulated and the others cannot:
@@ -119,146 +127,216 @@ export function samplesFor(
   return out.sort((a, b) => b.mean - a.mean);
 }
 
-export interface PlayerProjection {
+/**
+ * Which stats are a slice of the number the game model projects.
+ *
+ * Points in a sport whose scoreboard counts points can be written as a share
+ * of the team's score, so tonight's projected scoring enters the projection.
+ * Nothing else here can: rebounds plainly co-move with missed shots, but
+ * estimating that needs far more than a season's opening weeks, and a
+ * correlation fitted from nine games is noise with a sign.
+ */
+export function couplesToScoreboard(
+  league: League,
+  market: PlayerMarket,
+): boolean {
+  return market === "points" && (league === "NBA" || league === "NCAAB");
+}
+
+/** One threshold, with the odds the player's own games imply for it. */
+export interface LadderRung {
+  line: number;
+  /** Simulated probability of clearing it. */
+  pOver: number;
+  /** Fair odds for each side at that probability — no margin, no book. */
+  overOdds: number;
+  underOdds: number;
+  /** 90% range on pOver, from resampling which games we saw. */
+  lo: number;
+  hi: number;
+  /** True when the range is wide enough that the rung says little. */
+  uncertain: boolean;
+}
+
+/**
+ * How wide a 90% range has to be before a rung is called uninformative.
+ *
+ * A range of 25 points or more spans most of the plausible prices for a prop,
+ * so the rung cannot distinguish a good number from a bad one. In the opening
+ * weeks of a season most rungs will exceed this, and saying so is the point.
+ */
+export const UNINFORMATIVE_RANGE = 0.25;
+
+/**
+ * The thresholds this player's own distribution makes worth quoting.
+ *
+ * Chosen from the simulated outcomes rather than from anything posted: the
+ * half-points spanning the middle of the distribution, capped so the table
+ * stays readable. A rung the player clears 99% or 1% of the time carries no
+ * information and is left off.
+ */
+export function ladderLines(drawn: number[], maxRungs = 7): number[] {
+  if (drawn.length === 0) return [];
+  const sorted = [...drawn].sort((a, b) => a - b);
+  const q = (p: number) => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+  const lo = Math.floor(q(0.1));
+  const hi = Math.ceil(q(0.9));
+  const out: number[] = [];
+  const step = Math.max(1, Math.ceil((hi - lo) / maxRungs));
+  for (let v = lo; v <= hi && out.length < maxRungs; v += step) out.push(v + 0.5);
+  return out;
+}
+
+/**
+ * Everything the player's games say, with no market input of any kind.
+ *
+ * The draws are generated once and every rung is read off the same set, so
+ * the ladder is internally consistent: P(over 19.5) can never exceed
+ * P(over 18.5) because of sampling noise between rows.
+ */
+export interface PlayerOdds {
   player: string;
   teamAbbr: string;
   market: PlayerMarket;
-  /** The line this was graded against. */
-  line: number;
-  /** Simulated probability of going over it. */
-  hitRate: number;
-  /** 90% bootstrap interval on that probability, from resampling the games. */
-  lo: number;
-  hi: number;
-  /** Mean of the simulated outcome. */
+  /** Mean of the simulated outcome for THIS game. */
   projected: number;
-  /** The player's raw per-game average, for comparison with the projection. */
+  /** The player's plain per-game average, for comparison with the projection. */
   historicalMean: number;
-  /** How often their actual games cleared this line — the naive answer. */
-  historicalHitRate: number;
   games: number;
   meanMinutes: number;
-  /** Whether the simulated game's scoring fed into this. */
   coupledToGame: boolean;
-  /** Hit rate in runs where the game went over its total. Points only. */
+  rungs: LadderRung[];
+  /** Hit rate above/below the game's projected total, at the central rung. */
   hitGivenOver?: number;
   hitGivenUnder?: number;
 }
 
-/**
- * Simulate one player's market against a line, on the game's own draws.
- *
- * `teamTotals` is one simulated score for the PLAYER'S team per run, taken
- * from the same grid the rest of the panel samples, so the player's outcome
- * and the game's outcome come from one draw rather than two.
- *
- * For points: each run resamples a game, takes that game's share of team
- * scoring, and applies it to that run's simulated team score. For everything
- * else: each run resamples a game and uses the value, with no pretence that
- * tonight's pace entered into it.
- */
-export function simulatePlayer(
+export function playerOdds(
   sample: PlayerSample,
-  line: number,
   teamTotals: number[],
   gameTotals: number[],
   overUnderLine: number,
+  coupled: boolean,
   rnd: () => number,
-): PlayerProjection {
+): PlayerOdds {
   const runs = Math.min(teamTotals.length, gameTotals.length);
   const n = sample.values.length;
-  const coupled = sample.market === "points" && sample.shares.some((s) => s > 0);
+  const useShare = coupled && sample.shares.some((s) => s > 0);
 
-  let hits = 0, sum = 0;
-  let hitOver = 0, hitUnder = 0, overRuns = 0, underRuns = 0;
+  // One set of draws, reused for every rung.
   const drawn = new Float64Array(runs);
+  const gameIdx = new Int32Array(runs);
   for (let i = 0; i < runs; i++) {
     const g = Math.min(n - 1, Math.floor(rnd() * n));
-    const value = coupled ? sample.shares[g] * teamTotals[i] : sample.values[g];
-    drawn[i] = value;
-    sum += value;
-    const over = value > line;
-    if (over) hits++;
-    if (gameTotals[i] > overUnderLine) {
-      overRuns++;
-      if (over) hitOver++;
-    } else if (gameTotals[i] < overUnderLine) {
-      underRuns++;
-      if (over) hitUnder++;
-    }
+    gameIdx[i] = g;
+    drawn[i] = useShare ? sample.shares[g] * teamTotals[i] : sample.values[g];
   }
+  const lines = ladderLines(Array.from(drawn));
 
   /*
-   * The interval is the point of this whole exercise.
+   * The bootstrap is over WHICH GAMES WE SAW, not over simulation runs.
    *
-   * Resampling WHICH GAMES WE SAW, not just within them: each bootstrap
-   * replicate draws n games with replacement from the n observed, and reruns
-   * the hit rate on that replicate. That propagates the thing that actually
-   * dominates the uncertainty here — that we have nine games and a different
-   * nine would have said something else. A sampling interval taken only over
-   * simulation runs would shrink with more runs and tell the reader nothing,
-   * which would be worse than silence.
+   * That distinction is the whole value of the interval. Resampling runs
+   * would shrink the range as runs rise and tell the reader nothing; what
+   * actually dominates the uncertainty is that there are nine games and a
+   * different nine would have said something else. So each replicate draws n
+   * games with replacement from the n observed and re-reads the ladder.
    */
   const REPLICATES = 300;
-  const rates: number[] = [];
+  const perRep = Math.max(80, Math.floor(runs / 25));
+  const repRates: number[][] = lines.map(() => []);
   for (let b = 0; b < REPLICATES; b++) {
-    const idx: number[] = [];
-    for (let k = 0; k < n; k++) idx.push(Math.min(n - 1, Math.floor(rnd() * n)));
-    let h = 0;
-    const perRep = Math.max(50, Math.floor(runs / 20));
+    const pool: number[] = [];
+    for (let k = 0; k < n; k++) pool.push(Math.min(n - 1, Math.floor(rnd() * n)));
+    const vals: number[] = [];
     for (let i = 0; i < perRep; i++) {
-      const g = idx[Math.min(n - 1, Math.floor(rnd() * n))];
+      const g = pool[Math.min(n - 1, Math.floor(rnd() * n))];
       const t = teamTotals[Math.min(runs - 1, Math.floor(rnd() * runs))];
-      const value = coupled ? sample.shares[g] * t : sample.values[g];
-      if (value > line) h++;
+      vals.push(useShare ? sample.shares[g] * t : sample.values[g]);
     }
-    rates.push(h / perRep);
+    lines.forEach((line, li) => {
+      repRates[li].push(vals.filter((v) => v > line).length / vals.length);
+    });
   }
-  rates.sort((a, b) => a - b);
-  const q = (p: number) => rates[Math.min(rates.length - 1, Math.floor(p * rates.length))];
 
+  const built: LadderRung[] = lines.map((line, li) => {
+    let over = 0;
+    for (let i = 0; i < runs; i++) if (drawn[i] > line) over++;
+    const pOver = runs > 0 ? over / runs : 0;
+    const sortedRep = repRates[li].sort((a, b) => a - b);
+    const qq = (p: number) =>
+      sortedRep[Math.min(sortedRep.length - 1, Math.floor(p * sortedRep.length))] ?? pOver;
+    const lo = qq(0.05);
+    const hi = qq(0.95);
+    return {
+      line,
+      pOver,
+      overOdds: fairAmericanOdds(pOver),
+      underOdds: fairAmericanOdds(1 - pOver),
+      lo,
+      hi,
+      uncertain: hi - lo >= UNINFORMATIVE_RANGE,
+    };
+  });
+
+  /*
+   * Drop the rungs that say nothing, and the ones that repeat.
+   *
+   * Both come straight from the sample size and both were visible the moment
+   * this ran on real games. With nine games the distribution has nine support
+   * points, so several adjacent half-point lines sit in the same gap between
+   * observed values and return the IDENTICAL probability — one player showed
+   * 89% at 3.5, 4.5 and 5.5. Printing all three implies the model
+   * distinguishes them. Only the highest line in each run is kept, because
+   * that is the strongest true statement available.
+   *
+   * A rung nobody ever cleared prices at +99900, which is not a number to put
+   * in front of anyone; it means "not in nine games", which is not the same
+   * as "never". Rungs outside 2–98% are dropped rather than quoted.
+   */
+  const rungs: LadderRung[] = [];
+  for (const r of built) {
+    if (r.pOver < 0.02 || r.pOver > 0.98) continue;
+    const prev = rungs[rungs.length - 1];
+    if (prev && Math.abs(prev.pOver - r.pOver) < 1e-9) {
+      rungs[rungs.length - 1] = r;
+      continue;
+    }
+    rungs.push(r);
+  }
+
+  // The conditional split, read at the rung nearest the projection.
+  let hitGivenOver: number | undefined;
+  let hitGivenUnder: number | undefined;
+  if (useShare && rungs.length > 0) {
+    const central = rungs.reduce((a, b) =>
+      Math.abs(b.pOver - 0.5) < Math.abs(a.pOver - 0.5) ? b : a,
+    );
+    let ho = 0, hu = 0, no = 0, nu = 0;
+    for (let i = 0; i < runs; i++) {
+      const hit = drawn[i] > central.line;
+      if (gameTotals[i] > overUnderLine) { no++; if (hit) ho++; }
+      else if (gameTotals[i] < overUnderLine) { nu++; if (hit) hu++; }
+    }
+    hitGivenOver = no ? ho / no : 0;
+    hitGivenUnder = nu ? hu / nu : 0;
+  }
+
+  let sum = 0;
+  for (let i = 0; i < runs; i++) sum += drawn[i];
   return {
     player: sample.player,
     teamAbbr: sample.teamAbbr,
     market: sample.market,
-    line,
-    hitRate: runs > 0 ? hits / runs : 0,
-    lo: q(0.05),
-    hi: q(0.95),
     projected: runs > 0 ? sum / runs : 0,
     historicalMean: sample.mean,
-    historicalHitRate:
-      sample.values.filter((v) => v > line).length / Math.max(1, n),
     games: sample.games,
     meanMinutes: sample.meanMinutes,
-    coupledToGame: coupled,
-    ...(coupled
-      ? {
-          hitGivenOver: overRuns ? hitOver / overRuns : 0,
-          hitGivenUnder: underRuns ? hitUnder / underRuns : 0,
-        }
-      : {}),
+    coupledToGame: useShare,
+    rungs,
+    hitGivenOver,
+    hitGivenUnder,
   };
-}
-
-/**
- * Is this estimate strong enough to argue with a price?
- *
- * Deliberately strict, and deliberately shown. A 90% interval that straddles
- * the market's own probability means the history cannot distinguish the two,
- * and a disagreement inside that interval is not a finding. With nine games
- * most rows will fail this, which is the correct answer in early November
- * rather than a reason to loosen it.
- */
-export function beatsMarket(
-  p: PlayerProjection,
-  marketProbability: number,
-): { verdict: "model-higher" | "model-lower" | "indistinguishable"; gap: number } {
-  const gap = p.hitRate - marketProbability;
-  if (marketProbability > p.lo && marketProbability < p.hi) {
-    return { verdict: "indistinguishable", gap };
-  }
-  return { verdict: gap > 0 ? "model-higher" : "model-lower", gap };
 }
 
 /** The smallest history worth simulating at all. */

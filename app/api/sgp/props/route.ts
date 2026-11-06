@@ -4,11 +4,9 @@ import {
   fetchEventProps,
   propCreditCost,
   PROP_MARKETS,
-  PROP_FIT_MARKETS,
   type PropOutcome,
 } from "@/lib/providers/oddsapi";
-import { buildConsensus, isBookmaker, isPlausibleAmerican } from "@/lib/market";
-import { americanToDecimal, impliedProbability, removeVigShin } from "@/lib/sgp";
+import { buildConsensus } from "@/lib/market";
 
 export const dynamic = "force-dynamic";
 
@@ -109,104 +107,13 @@ function priceProps(raw: PropOutcome[]): PropLine[] {
   );
 }
 
-/** One player's priced numbers, for fitting rather than for edge. */
-export interface PropFitQuotes {
-  player: string;
-  market: string;
-  /** De-vigged over probability at each distinct posted number. */
-  quotes: { line: number; pOver: number; books: number }[];
-}
-
-/**
- * The same board, grouped for fitting a distribution instead of pricing edge.
- *
- * These are two different jobs and they need two different filters, which I
- * got wrong by reusing one for both.
- *
- * Price edge needs at least TWO BOOKS on the SAME NUMBER: a consensus is a
- * disagreement between books about one identical bet, and without a second
- * book there is no benchmark to beat. `priceProps` is right to drop
- * everything else.
- *
- * Fitting a player's distribution needs something else entirely — at least
- * two DISTINCT NUMBERS, from however many books. One book posting over 14.5
- * and over 17.5 on the same player pins down that player's spread perfectly
- * well, and `priceProps` was throwing exactly those away before the
- * simulation ever saw them. A live college game returned twelve prop prices
- * from a single book and the simulator was handed nothing at all.
- *
- * Each probability is de-vigged from ONE book's own two-sided price, which is
- * the only honest way to read a single book: Shin on that book's pair, no
- * pooling of raw prices across books that hold differently. Where more than
- * one book quotes the same number their fair probabilities are averaged, and
- * `books` records how many stood behind it.
- */
-function fitQuotes(raw: PropOutcome[]): PropFitQuotes[] {
-  // player | market | line -> book -> both sides
-  const byLine = new Map<string, Map<string, { over?: number; under?: number }>>();
-  for (const o of raw) {
-    const key = `${o.player}|${o.market}|${o.line}`;
-    let books = byLine.get(key);
-    if (!books) { books = new Map(); byLine.set(key, books); }
-    const cell = books.get(o.book) ?? {};
-    const side = o.side.toLowerCase();
-    if (side.startsWith("over")) cell.over = o.american;
-    else if (side.startsWith("under")) cell.under = o.american;
-    books.set(o.book, cell);
-  }
-
-  const byPlayer = new Map<string, PropFitQuotes>();
-  for (const [key, books] of byLine) {
-    const [player, market, lineStr] = key.split("|");
-    const line = Number(lineStr);
-    const fairs: number[] = [];
-    for (const [book, c] of books) {
-      if (c.over == null || c.under == null) continue;
-      if (!isBookmaker(book)) continue;
-      if (!isPlausibleAmerican(c.over) || !isPlausibleAmerican(c.under)) continue;
-      const dv = removeVigShin([
-        impliedProbability(americanToDecimal(c.over)),
-        impliedProbability(americanToDecimal(c.under)),
-      ]);
-      if (!Number.isFinite(dv.fair[0])) continue;
-      fairs.push(dv.fair[0]);
-    }
-    if (fairs.length === 0) continue;
-    const pOver = fairs.reduce((a, b) => a + b, 0) / fairs.length;
-    const pk = `${player}|${market}`;
-    const g = byPlayer.get(pk) ?? { player, market, quotes: [] };
-    g.quotes.push({ line, pOver, books: fairs.length });
-    byPlayer.set(pk, g);
-  }
-
-  for (const g of byPlayer.values()) g.quotes.sort((a, b) => a.line - b.line);
-  // Most numbers first: those are the players a fit can actually identify.
-  return [...byPlayer.values()].sort((a, b) => b.quotes.length - a.quotes.length);
-}
-
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const league = url.searchParams.get("league") as League | null;
   const eventId = url.searchParams.get("eventId");
-  /*
-   * Two callers wanting two different market sets. The props board wants the
-   * standard one-number-per-player markets it can price an edge on; the
-   * simulator wants the alternate-line ladder, because one number cannot
-   * identify a spread and fitting is the whole point.
-   */
-  const purpose = url.searchParams.get("purpose") === "fit" ? "fit" : "edge";
-  const wanted =
-    purpose === "fit" ? PROP_FIT_MARKETS[league as League] : PROP_MARKETS[league as League];
+  const wanted = PROP_MARKETS[league as League];
   if (!league || !eventId || !wanted) {
-    return NextResponse.json(
-      {
-        error:
-          purpose === "fit"
-            ? "no-fittable-market-in-this-league"
-            : "bad-request",
-      },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: "bad-request" }, { status: 400 });
   }
 
   const controller = new AbortController();
@@ -216,13 +123,12 @@ export async function GET(req: Request) {
       league,
       eventId,
       controller.signal,
-      purpose,
     );
     if (reason && props.length === 0) {
       return NextResponse.json(
         {
           error: reason,
-          wouldCost: purpose === "fit" ? wanted.length : propCreditCost(league),
+          wouldCost: propCreditCost(league),
           lines: [],
         },
         { status: reason === "no-key" || reason === "budget" ? 503 : 200 },
@@ -240,23 +146,17 @@ export async function GET(req: Request) {
      * an evening of looking in the wrong place.
      */
     const lines = priceProps(props);
-    const fits = fitQuotes(props);
     const books = new Set(props.map((p) => p.book));
-    const identifiable = fits.filter((f) => f.quotes.length >= 2).length;
     return NextResponse.json({
       lines,
-      fitQuotes: fits,
       creditsUsed: cost,
       markets: wanted,
-      purpose,
       feed: {
         outcomes: props.length,
         books: books.size,
         pricedLines: lines.length,
-        players: fits.length,
-        identifiablePlayers: identifiable,
       },
-      ...(lines.length === 0 && identifiable === 0
+      ...(lines.length === 0
         ? {
             error:
               props.length === 0

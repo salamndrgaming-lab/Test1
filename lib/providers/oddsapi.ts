@@ -513,27 +513,6 @@ export const PROP_MARKETS: Record<League, string[]> = {
   MLB: ["batter_hits", "batter_home_runs", "pitcher_strikeouts"],
 };
 
-/**
- * The markets that identify a player's DISTRIBUTION rather than price an edge.
- *
- * A standard prop market posts one number per player, and a single book
- * posting one number is one equation in two unknowns — a location without a
- * scale. A live college game returned exactly that: six player/market groups,
- * one line each, from one book. Nothing fittable, by the fit's own standard.
- *
- * The `_alternate` markets are the ladder: several priced numbers for the same
- * player, which pin down location AND scale. They are the only reason the
- * market-fitted approach can work at all on this feed.
- *
- * Only points, and only where points are a slice of the scoreboard — see
- * isScoringComponent in lib/propSim.ts. Two markets, so two credits for a
- * game, which is less than the four a full NBA props board costs.
- */
-export const PROP_FIT_MARKETS: Partial<Record<League, string[]>> = {
-  NBA: ["player_points", "player_points_alternate"],
-  NCAAB: ["player_points", "player_points_alternate"],
-};
-
 /** What one game's props will cost, so the cost can be shown before it is paid. */
 export function propCreditCost(league: League): number {
   return (PROP_MARKETS[league] ?? []).length; // one region
@@ -585,19 +564,14 @@ export async function fetchEventProps(
   league: League,
   eventId: string,
   signal?: AbortSignal,
-  /** Which market set to ask for. "fit" asks for the alternate-line ladder. */
-  purpose: "edge" | "fit" = "edge",
 ): Promise<{ props: PropOutcome[]; cost: number; reason?: string }> {
   const apiKey = process.env.ODDS_API_KEY;
   if (!apiKey) return { props: [], cost: 0, reason: "no-key" };
 
-  const markets =
-    (purpose === "fit" ? PROP_FIT_MARKETS[league] : PROP_MARKETS[league]) ?? [];
+  const markets = PROP_MARKETS[league] ?? [];
   if (markets.length === 0) return { props: [], cost: 0, reason: "unsupported-league" };
 
-  // Cached per market set: the two purposes ask for different markets, so
-  // serving one from the other's cache would hand back the wrong board.
-  const key = `${league}:${purpose}:${eventId}`;
+  const key = `${league}:${eventId}`;
   const cached = propCache.get(key);
   if (cached && Date.now() - cached.at < PROP_TTL_MS) {
     return { props: cached.props, cost: 0 };

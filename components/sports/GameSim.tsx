@@ -254,7 +254,11 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
     try {
       const res = await fetch(
         `/api/sgp/props?league=${encodeURIComponent(game.league)}` +
-          `&eventId=${encodeURIComponent(eventIds[game.gameId])}`,
+          `&eventId=${encodeURIComponent(eventIds[game.gameId])}` +
+          // The alternate-line ladder, not the price-edge board. One number
+          // per player cannot identify a spread, so the cheap board is of no
+          // use here however many books quote it.
+          `&purpose=fit`,
       );
       const json = await res.json();
       if (Array.isArray(json.fitQuotes) && json.fitQuotes.length > 0) {
@@ -270,7 +274,7 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
       } else {
         setProps([]);
         const feed = json.feed as
-          | { outcomes: number; books: number }
+          | { outcomes: number; books: number; players?: number }
           | undefined;
         setPropNote(
           json.error === "budget"
@@ -565,16 +569,18 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
                     disabled={propBusy}
                     className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[0.65rem] text-[var(--muted)] hover:border-[var(--accent)]/50 disabled:opacity-40"
                   >
-                    {propBusy ? "Loading…" : "Load props"}
+                    {propBusy ? "Loading…" : "Load props (2 credits)"}
                   </button>
                 )}
               </div>
               <p className="mb-2 text-[0.65rem] leading-relaxed text-[var(--muted-2)]">
-                A prop&apos;s own probability here is the market&apos;s, fitted
-                from the several lines books post for the same player — the
-                model has no player distribution and still does not pretend
-                to. What the run adds is how the prop moves WITH the game,
-                which no single posted price can tell you.
+                A prop&apos;s own probability here is the market&apos;s,
+                fitted from the ladder of alternate lines books post for the
+                same player — the model has no player distribution and still
+                does not pretend to. Several priced numbers are what make the
+                fit possible at all: one number is one equation in two
+                unknowns. What the run adds is how the prop moves WITH the
+                game, which no single posted price can tell you.
               </p>
               {!propsAvailable && (
                 <p className="rounded-lg bg-[var(--surface-2)] px-2.5 py-1.5 text-[0.65rem] leading-relaxed text-[var(--muted)]">

@@ -4,6 +4,7 @@ import {
   fetchEventProps,
   propCreditCost,
   PROP_MARKETS,
+  PROP_FIT_MARKETS,
   type PropOutcome,
 } from "@/lib/providers/oddsapi";
 import { buildConsensus, isBookmaker, isPlausibleAmerican } from "@/lib/market";
@@ -187,8 +188,25 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const league = url.searchParams.get("league") as League | null;
   const eventId = url.searchParams.get("eventId");
-  if (!league || !eventId || !PROP_MARKETS[league]) {
-    return NextResponse.json({ error: "bad-request" }, { status: 400 });
+  /*
+   * Two callers wanting two different market sets. The props board wants the
+   * standard one-number-per-player markets it can price an edge on; the
+   * simulator wants the alternate-line ladder, because one number cannot
+   * identify a spread and fitting is the whole point.
+   */
+  const purpose = url.searchParams.get("purpose") === "fit" ? "fit" : "edge";
+  const wanted =
+    purpose === "fit" ? PROP_FIT_MARKETS[league as League] : PROP_MARKETS[league as League];
+  if (!league || !eventId || !wanted) {
+    return NextResponse.json(
+      {
+        error:
+          purpose === "fit"
+            ? "no-fittable-market-in-this-league"
+            : "bad-request",
+      },
+      { status: 400 },
+    );
   }
 
   const controller = new AbortController();
@@ -198,12 +216,13 @@ export async function GET(req: Request) {
       league,
       eventId,
       controller.signal,
+      purpose,
     );
     if (reason && props.length === 0) {
       return NextResponse.json(
         {
           error: reason,
-          wouldCost: propCreditCost(league),
+          wouldCost: purpose === "fit" ? wanted.length : propCreditCost(league),
           lines: [],
         },
         { status: reason === "no-key" || reason === "budget" ? 503 : 200 },
@@ -228,7 +247,8 @@ export async function GET(req: Request) {
       lines,
       fitQuotes: fits,
       creditsUsed: cost,
-      markets: PROP_MARKETS[league],
+      markets: wanted,
+      purpose,
       feed: {
         outcomes: props.length,
         books: books.size,

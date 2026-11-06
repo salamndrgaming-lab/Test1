@@ -17,7 +17,7 @@ import {
   simulateProps,
   totalMoments,
   isScoringComponent,
-  type PricedPropLine,
+  type PropFitQuotes,
   type PropSimResult,
   type PropDecline,
 } from "@/lib/propSim";
@@ -159,7 +159,7 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
   const [completed, setCompleted] = useState<SimResult[]>([]);
   const frame = useRef<number | null>(null);
 
-  const [props, setProps] = useState<PricedPropLine[] | null>(null);
+  const [props, setProps] = useState<PropFitQuotes[] | null>(null);
   const [propBusy, setPropBusy] = useState(false);
   const [propNote, setPropNote] = useState<string | null>(null);
 
@@ -224,15 +224,29 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
   );
 
   /*
-   * Props are only offered where the decomposition is sound — a points
-   * market in a league whose scoreboard counts points. Everywhere else the
-   * button would spend credits to fetch lines this cannot do anything
-   * honest with, so it is not shown at all.
+   * Why props can or cannot run on THIS game, always stated.
+   *
+   * The first version rendered nothing at all when a game did not qualify,
+   * which from the outside is identical to the feature not existing — and the
+   * default selection is whichever game tops the board, usually football. So
+   * the section is always present and says which of the three cases applies:
+   * it can run, the stat is in the wrong units for this sport, or there is no
+   * props feed for this game.
+   *
+   * The button is still withheld in the unusable cases, because fetching
+   * would spend credits on lines nothing here can honestly use.
    */
-  const propsAvailable =
-    game != null &&
-    eventIds[game.gameId] != null &&
-    isScoringComponent(game.league, "player_points");
+  const propsStatus: { ok: boolean; reason?: string } = !game
+    ? { ok: false, reason: "no game selected" }
+    : !isScoringComponent(game.league, "player_points")
+      ? {
+          ok: false,
+          reason: `${game.league} has no player market measured in the units of its own scoreboard. Points are a slice of a basketball game's total; passing yards, receptions, shots on goal and strikeouts are not slices of anything this model projects, so a share of the total would be a ratio between unrelated quantities. Simulating one would mean inventing the correlation, which is the single thing this tool refuses to do.`,
+        }
+      : eventIds[game.gameId] == null
+        ? { ok: false, reason: "no props feed is available for this game." }
+        : { ok: true };
+  const propsAvailable = propsStatus.ok;
 
   const loadProps = async () => {
     if (!game || propBusy) return;
@@ -243,9 +257,16 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
           `&eventId=${encodeURIComponent(eventIds[game.gameId])}`,
       );
       const json = await res.json();
-      if (Array.isArray(json.lines) && json.lines.length > 0) {
-        setProps(json.lines as PricedPropLine[]);
-        if (json.creditsUsed === 0) setPropNote("Served from cache — no credits used.");
+      if (Array.isArray(json.fitQuotes) && json.fitQuotes.length > 0) {
+        setProps(json.fitQuotes as PropFitQuotes[]);
+        const feed = json.feed as
+          | { outcomes: number; books: number; identifiablePlayers: number }
+          | undefined;
+        setPropNote(
+          `${feed?.outcomes ?? 0} prop prices from ${feed?.books ?? 0} book${feed?.books === 1 ? "" : "s"}; ` +
+            `${feed?.identifiablePlayers ?? 0} player${feed?.identifiablePlayers === 1 ? "" : "s"} have two or more posted numbers, which is what a fit needs.` +
+            (json.creditsUsed === 0 ? " Served from cache — no credits used." : ""),
+        );
       } else {
         setProps([]);
         const feed = json.feed as
@@ -256,8 +277,8 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
             ? "Skipped to protect the monthly props budget."
             : json.error === "no-key"
               ? "No ODDS_API_KEY configured."
-              : json.error === "no-two-books-on-the-same-number"
-                ? `The feed returned ${feed?.outcomes ?? 0} prop prices from ${feed?.books ?? 0} book${feed?.books === 1 ? "" : "s"}, but no two of them posted the same number for the same player — so nothing here can be priced or fitted.`
+              : feed != null && feed.outcomes > 0
+                ? `The feed returned ${feed.outcomes} prop prices from ${feed.books} book${feed.books === 1 ? "" : "s"}, but every player had only ONE posted number. One number is one equation in two unknowns, so no distribution can be fitted — and guessing the spread would make the correlation an invention.`
                 : "The props feed returned nothing for this game. That is its coverage, not a judgement about the game.",
         );
       }
@@ -533,13 +554,12 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
             </div>
           )}
 
-          {propsAvailable && (
-            <div className="mt-3 border-t border-[var(--border)] pt-2.5">
+          <div className="mt-3 border-t border-[var(--border)] pt-2.5">
               <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
                 <p className="text-[0.7rem] font-semibold text-[var(--text)]">
                   Player props on these same runs
                 </p>
-                {props == null && (
+                {propsAvailable && props == null && (
                   <button
                     onClick={loadProps}
                     disabled={propBusy}
@@ -556,6 +576,14 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
                 to. What the run adds is how the prop moves WITH the game,
                 which no single posted price can tell you.
               </p>
+              {!propsAvailable && (
+                <p className="rounded-lg bg-[var(--surface-2)] px-2.5 py-1.5 text-[0.65rem] leading-relaxed text-[var(--muted)]">
+                  Not available on this game: {propsStatus.reason}
+                  {game && !isScoringComponent(game.league, "player_points") && (
+                    <> Pick an NBA or college basketball game above to run it.</>
+                  )}
+                </p>
+              )}
               {propNote && (
                 <p className="mb-2 text-[0.65rem] text-[var(--muted)]">{propNote}</p>
               )}
@@ -658,7 +686,6 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
                 </details>
               )}
             </div>
-          )}
         </>
       )}
     </div>

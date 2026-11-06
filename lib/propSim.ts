@@ -402,13 +402,17 @@ export function simulateProps(
   );
 }
 
-/** The shape the props endpoint returns, reduced to what a fit needs. */
-export interface PricedPropLine {
+/**
+ * One player's priced numbers, as the props endpoint groups them for fitting.
+ *
+ * Note what this is NOT: the price-edge board, which keeps only lines two or
+ * more books quote. A fit wants two distinct NUMBERS, from however many
+ * books, and a single book posting two of them identifies the spread fine.
+ */
+export interface PropFitQuotes {
   player: string;
   market: string;
-  line: number;
-  books: number;
-  over?: { fairProbability: number };
+  quotes: { line: number; pOver: number; books: number }[];
 }
 
 export interface PropDecline {
@@ -460,36 +464,24 @@ export function isScoringComponent(league: League, market: string): boolean {
  */
 export function prepareProps(
   league: League,
-  lines: PricedPropLine[],
+  board: PropFitQuotes[],
   aggMean: number,
   aggSd: number,
 ): { inputs: PropSimInput[]; declined: PropDecline[] } {
-  const groups = new Map<string, PricedPropLine[]>();
-  for (const l of lines) {
-    if (l.over?.fairProbability == null) continue;
-    const k = `${l.player}|${l.market}`;
-    const g = groups.get(k);
-    if (g) g.push(l);
-    else groups.set(k, [l]);
-  }
-
   const inputs: PropSimInput[] = [];
   const declined: PropDecline[] = [];
-  for (const [k, rows] of groups) {
-    const [player, market] = k.split("|");
+  for (const row of board) {
+    const { player, market, quotes } = row;
+    if (!quotes?.length) continue;
     if (!isScoringComponent(league, market)) {
       declined.push({
-        player, market, points: rows.length,
+        player, market, points: quotes.length,
         reason:
           "not measured in points, so its share of the game's scoring is not a share of anything",
       });
       continue;
     }
-    const fit = fitProp(
-      player,
-      market,
-      rows.map((r) => ({ line: r.line, pOver: r.over!.fairProbability })),
-    );
+    const fit = fitProp(player, market, quotes);
     const coupling = coupleToAggregate(fit, aggMean, aggSd);
     if (!coupling.usable) {
       declined.push({
@@ -499,12 +491,12 @@ export function prepareProps(
       });
       continue;
     }
-    // Grade against the best-covered line: the one the most books quote.
-    const graded = rows.reduce((a, b) => (b.books > a.books ? b : a));
+    // Grade against the best-covered number: the one the most books quote.
+    const graded = quotes.reduce((a, b) => (b.books > a.books ? b : a));
     inputs.push({
       player, market,
       line: graded.line,
-      marketProbability: graded.over!.fairProbability,
+      marketProbability: graded.pOver,
       coupling,
     });
   }

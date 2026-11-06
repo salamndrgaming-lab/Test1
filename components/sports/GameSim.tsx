@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { SgpLeg, SgpRecommendation } from "@/types";
+import type { League, SgpLeg, SgpRecommendation } from "@/types";
 import {
   gridForLeg,
   sampleScore,
@@ -134,16 +134,67 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
       if (g) g.push(l);
       else byGame.set(l.gameId, [l]);
     }
-    return [...byGame.entries()]
+    /*
+     * Ordered so what the panel can do MOST with comes first.
+     *
+     * This was a flat list of whatever order the board happened to be in —
+     * on a live Friday, 48 games with the NBA ones at positions 5, 29, 35 and
+     * 37 through 45. The default selection was therefore a football game, the
+     * props section correctly reported that football has no market in the
+     * scoreboard's units, and the nine NBA games that COULD run props were
+     * invisible unless you scrolled a 48-entry dropdown looking for them.
+     * Data being present is not the same as being findable.
+     *
+     * Leagues whose points markets can be fitted come first, so the default
+     * selection can actually run the whole panel; the rest follow. Grouped by
+     * league in the markup, with the prop-capable games marked.
+     */
+    const all = [...byGame.entries()]
       .map(([gameId, legs]) => ({
         gameId,
         matchup: legs[0].matchup,
         league: legs[0].league,
         legs,
         grid: legs.map(gridForLeg).find((g) => g != null) ?? null,
+        canProps:
+          eventIds[gameId] != null &&
+          isScoringComponent(legs[0].league, "player_points"),
       }))
       .filter((g) => g.grid != null);
-  }, [pool]);
+
+    /*
+     * League tier first, THEN league, then prop-capability within it. Sorting
+     * on capability above league split NBA into two runs — the capable games
+     * and the rest — which would have emitted two NBA <optgroup>s for one
+     * league. Grouping is the point, so the league has to win.
+     */
+    const tier = (league: string) =>
+      isScoringComponent(league as League, "player_points") ? 0 : 1;
+    return all.sort(
+      (a, b) =>
+        tier(a.league) - tier(b.league) ||
+        a.league.localeCompare(b.league) ||
+        Number(b.canProps) - Number(a.canProps) ||
+        a.matchup.localeCompare(b.matchup),
+    );
+  }, [pool, eventIds]);
+
+  const propCapable = useMemo(
+    () => games.filter((g) => g.canProps).length,
+    [games],
+  );
+
+  /** League groups in dropdown order, for <optgroup>. */
+  const leagueGroups = useMemo(() => {
+    const out: { league: string; games: typeof games; withProps: number }[] = [];
+    for (const g of games) {
+      let grp = out.find((o) => o.league === g.league);
+      if (!grp) { grp = { league: g.league, games: [], withProps: 0 }; out.push(grp); }
+      grp.games.push(g);
+      if (g.canProps) grp.withProps++;
+    }
+    return out;
+  }, [games]);
 
   const [gameId, setGameId] = useState<string | null>(null);
   const [runs, setRuns] = useState(10000);
@@ -349,7 +400,15 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
           Simulate a game
         </h3>
         <span className="text-[0.7rem] text-[var(--muted-2)]">
-          {games.length} game{games.length === 1 ? "" : "s"} available
+          {games.length} game{games.length === 1 ? "" : "s"}
+          {propCapable > 0 && (
+            <>
+              {" · "}
+              <span className="text-[var(--accent)]">
+                {propCapable} with player props
+              </span>
+            </>
+          )}
         </span>
       </div>
       <p className="mb-2.5 text-xs leading-relaxed text-[var(--muted)]">
@@ -367,10 +426,22 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
             onChange={(e) => chooseGame(e.target.value)}
             className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-sm"
           >
-            {games.map((g) => (
-              <option key={g.gameId} value={g.gameId}>
-                {g.matchup} · {g.league}
-              </option>
+            {leagueGroups.map((grp) => (
+              <optgroup
+                key={grp.league}
+                label={
+                  grp.withProps > 0
+                    ? `${grp.league} — ${grp.withProps} with player props`
+                    : `${grp.league} — team markets only`
+                }
+              >
+                {grp.games.map((g) => (
+                  <option key={g.gameId} value={g.gameId}>
+                    {g.matchup}
+                    {g.canProps ? " · props" : ""}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </div>

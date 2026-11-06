@@ -21,6 +21,15 @@ import {
   type PropSimResult,
   type PropDecline,
 } from "@/lib/propSim";
+import type { PlayerGameLine } from "@/lib/providers/playerlogs";
+import {
+  samplesFor,
+  simulatePlayer,
+  beatsMarket,
+  MIN_GAMES,
+  type PlayerMarket,
+  type PlayerProjection,
+} from "@/lib/playerModel";
 import { classNames } from "@/lib/format";
 
 /**
@@ -214,6 +223,14 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
   const [propBusy, setPropBusy] = useState(false);
   const [propNote, setPropNote] = useState<string | null>(null);
 
+  /* The player's own games — the statistical model's only input. */
+  const [logs, setLogs] = useState<PlayerGameLine[] | null>(null);
+  const [logBusy, setLogBusy] = useState(false);
+  const [logNote, setLogNote] = useState<string | null>(null);
+  const [logGames, setLogGames] = useState(0);
+  const [market, setMarket] = useState<PlayerMarket>("points");
+  const [teamSides, setTeamSides] = useState<Record<string, "home" | "away">>({});
+
   const game = useMemo(
     () => games.find((g) => g.gameId === gameId) ?? games[0] ?? null,
     [games, gameId],
@@ -237,6 +254,10 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
     setGameId(id);
     setProps(null);
     setPropNote(null);
+    setLogs(null);
+    setLogNote(null);
+    setLogGames(0);
+    setTeamSides({});
   };
 
   const start = useCallback(() => {
@@ -351,6 +372,103 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
     if (posted != null) return { line: posted, posted: true };
     return summary ? { line: summary.meanTotal, posted: false } : null;
   }, [game, summary]);
+
+  const loadLogs = async () => {
+    if (!game || logBusy) return;
+    setLogBusy(true); setLogNote(null);
+    try {
+      const res = await fetch(
+        `/api/sgp/playerlogs?league=${encodeURIComponent(game.league)}` +
+          `&eventId=${encodeURIComponent(game.gameId)}`,
+      );
+      const json = await res.json();
+      if (Array.isArray(json.lines) && json.lines.length > 0) {
+        setLogs(json.lines as PlayerGameLine[]);
+        setLogGames(json.gamesRead ?? 0);
+        const sides: Record<string, "home" | "away"> = {};
+        for (const t of json.teams ?? []) {
+          if (t.id && (t.homeAway === "home" || t.homeAway === "away")) {
+            sides[t.id] = t.homeAway;
+          }
+        }
+        setTeamSides(sides);
+      } else {
+        setLogs([]);
+        setLogNote(
+          json.reason ??
+            (json.error === "timeout"
+              ? "Reading the box scores took too long. They are cached once read, so trying again is usually quick."
+              : "No completed box scores came back for these teams yet."),
+        );
+      }
+    } catch {
+      setLogNote("Could not reach the box-score feed.");
+    } finally {
+      setLogBusy(false);
+    }
+  };
+
+  /** The market's own de-vigged probability per player, purely to compare. */
+  const marketByPlayer = useMemo(() => {
+    const out = new Map<string, { line: number; p: number }>();
+    for (const row of props ?? []) {
+      if (row.market !== "player_points" || !row.quotes.length) continue;
+      const best = row.quotes.reduce((a, b) => (b.books > a.books ? b : a));
+      out.set(row.player.toLowerCase(), { line: best.line, p: best.pOver });
+    }
+    return out;
+  }, [props]);
+
+  /**
+   * The statistical projections.
+   *
+   * Lines come from the book where one is posted, because grading against a
+   * real number is the only way the output can be checked; where none is, the
+   * player's own median is used and the row says so. The LINE is the market's
+   * contribution here and nothing else is — the probability is the player's.
+   */
+  const playerSim = useMemo(() => {
+    if (!game?.grid || !logs?.length || completed.length === 0 || !postedTotal) {
+      return null;
+    }
+    const samples = samplesFor(logs, market);
+    const eligible = samples.filter((s) => s.games >= MIN_GAMES);
+    const thin = samples.length - eligible.length;
+    const gameTotals = completed.map((r) => r.homeScore + r.awayScore);
+    const rows: (PlayerProjection & {
+      marketProbability?: number;
+      verdict?: ReturnType<typeof beatsMarket>["verdict"];
+    })[] = [];
+    for (const s of eligible) {
+      const side = teamSides[s.teamId];
+      // Without knowing which side a player is on, a points projection would
+      // be multiplied by the WRONG team's simulated score. Skip rather than
+      // guess; the feed gives the sides, so this should not normally fire.
+      if (market === "points" && side == null) continue;
+      const teamTotals = completed.map((r) =>
+        side === "home" ? r.homeScore : r.awayScore,
+      );
+      const posted = marketByPlayer.get(s.player.toLowerCase());
+      const sorted = [...s.values].sort((a, b) => a - b);
+      const line =
+        posted?.line ??
+        Math.floor(sorted[Math.floor(sorted.length / 2)]) + 0.5;
+      let seed = s.games * 7919;
+      for (let i = 0; i < s.player.length; i++) {
+        seed = (seed * 31 + s.player.charCodeAt(i)) & 0x7fffffff;
+      }
+      const p = simulatePlayer(
+        s, line, teamTotals, gameTotals, postedTotal.line, seededRandom(seed),
+      );
+      rows.push({
+        ...p,
+        marketProbability: posted?.p,
+        verdict: posted ? beatsMarket(p, posted.p).verdict : undefined,
+      });
+    }
+    rows.sort((a, b) => b.projected - a.projected);
+    return { rows, thin, samples: samples.length };
+  }, [game, logs, completed, postedTotal, market, teamSides, marketByPlayer]);
 
   const propSim = useMemo(() => {
     if (!game?.grid || !props?.length || completed.length === 0 || !postedTotal) {
@@ -629,7 +747,166 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
             </div>
           )}
 
-          <div className="mt-3 border-t border-[var(--border)] pt-2.5">
+          {propsAvailable && (
+            <div className="mt-3 border-t border-[var(--border)] pt-2.5">
+              <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+                <p className="text-[0.7rem] font-semibold text-[var(--text)]">
+                  Player props from the players&apos; own games
+                </p>
+                <div className="flex items-center gap-1.5">
+                  {(["points", "rebounds", "assists", "threes"] as PlayerMarket[]).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setMarket(m)}
+                      className={classNames(
+                        "rounded-full border px-2 py-0.5 text-[0.6rem] capitalize transition-colors",
+                        market === m
+                          ? "border-sky-400 bg-sky-400/10 text-sky-200"
+                          : "border-[var(--border)] text-[var(--muted)]",
+                      )}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                  {logs == null && (
+                    <button
+                      onClick={loadLogs}
+                      disabled={logBusy}
+                      className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[0.65rem] text-[var(--muted)] hover:border-[var(--accent)]/50 disabled:opacity-40"
+                    >
+                      {logBusy ? "Reading box scores…" : "Load player games"}
+                    </button>
+                  )}
+                </div>
+              </div>
+              <p className="mb-2 text-[0.65rem] leading-relaxed text-[var(--muted-2)]">
+                Every probability here is simulated from the player&apos;s own
+                box scores this season — no book&apos;s number is an input. Each
+                run resamples one of their actual games, so nothing is assumed
+                about the shape of the distribution. For points, that
+                game&apos;s share of its team&apos;s scoring is applied to
+                tonight&apos;s simulated team score, which is what makes this
+                a projection for THIS game rather than a tally of past ones.
+                The book&apos;s line is used only as the number to grade
+                against, and its price only as something to disagree with.
+              </p>
+              {logNote && (
+                <p className="mb-2 rounded-lg bg-[var(--surface-2)] px-2.5 py-1.5 text-[0.65rem] leading-relaxed text-[var(--muted)]">
+                  {logNote}
+                </p>
+              )}
+
+              {playerSim && playerSim.rows.length > 0 && (
+                <>
+                  <div className="max-h-96 overflow-y-auto">
+                    <table className="w-full text-[0.7rem]">
+                      <thead className="sticky top-0 bg-[var(--surface)]">
+                        <tr className="text-[0.6rem] uppercase tracking-wide text-[var(--muted-2)]">
+                          <th className="pb-1 text-left font-medium">Player</th>
+                          <th className="pb-1 text-right font-medium">Gms</th>
+                          <th className="pb-1 text-right font-medium">Avg</th>
+                          <th className="pb-1 text-right font-medium">Proj</th>
+                          <th className="pb-1 text-right font-medium">Line</th>
+                          <th className="pb-1 text-right font-medium">Over</th>
+                          <th className="pb-1 text-right font-medium">90% range</th>
+                          <th className="pb-1 text-right font-medium">Book</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {playerSim.rows.map((r) => (
+                          <tr
+                            key={`${r.player}|${r.market}`}
+                            className="border-t border-[var(--border)]"
+                          >
+                            <td className="py-1 pr-2 truncate">
+                              {r.player}
+                              <span className="ml-1 text-[0.6rem] text-[var(--muted-2)]">
+                                {r.teamAbbr} · {r.meanMinutes.toFixed(0)}m
+                              </span>
+                            </td>
+                            <td className="py-1 text-right tabular-nums text-[var(--muted-2)]">
+                              {r.games}
+                            </td>
+                            <td className="py-1 text-right tabular-nums text-[var(--muted-2)]">
+                              {r.historicalMean.toFixed(1)}
+                            </td>
+                            <td className="py-1 text-right tabular-nums">
+                              {r.projected.toFixed(1)}
+                            </td>
+                            <td className="py-1 text-right tabular-nums text-[var(--muted)]">
+                              {r.line}
+                            </td>
+                            <td className="py-1 text-right font-semibold tabular-nums">
+                              {(r.hitRate * 100).toFixed(0)}%
+                            </td>
+                            <td className="py-1 text-right tabular-nums text-[var(--muted-2)]">
+                              {(r.lo * 100).toFixed(0)}–{(r.hi * 100).toFixed(0)}%
+                            </td>
+                            <td className="py-1 text-right tabular-nums">
+                              {r.marketProbability == null ? (
+                                <span className="text-[var(--muted-2)]">—</span>
+                              ) : (
+                                <span
+                                  className={classNames(
+                                    r.verdict === "indistinguishable"
+                                      ? "text-[var(--muted-2)]"
+                                      : "font-semibold text-good",
+                                  )}
+                                >
+                                  {(r.marketProbability * 100).toFixed(0)}%
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="mt-1.5 text-[0.62rem] leading-relaxed text-[var(--muted-2)]">
+                    Read the <strong>90% range</strong> before anything else.
+                    It comes from resampling WHICH GAMES we happened to see, so
+                    it carries the fact that there are only {logGames} games of
+                    this season to read. Where that range contains the
+                    book&apos;s own number, the history cannot tell the two
+                    apart and the difference is not a finding however large it
+                    looks — those rows are greyed. A column that disagrees with
+                    the book is a hypothesis to log, not a bet: nothing in this
+                    project has yet measured whether these projections beat a
+                    closing prop line, and the team model does not beat a
+                    closing side.
+                    {playerSim.thin > 0 && (
+                      <>
+                        {" "}
+                        {playerSim.thin} further player
+                        {playerSim.thin === 1 ? "" : "s"} appeared in fewer than{" "}
+                        {MIN_GAMES} games and were left out rather than
+                        projected from two or three nights.
+                      </>
+                    )}
+                  </p>
+                </>
+              )}
+
+              {logs != null && logs.length > 0 && completed.length === 0 && (
+                <p className="text-[0.65rem] text-[var(--muted)]">
+                  {logGames} games of box scores loaded. The projections need a
+                  completed run — press Run.
+                </p>
+              )}
+
+              {playerSim && playerSim.rows.length === 0 && (
+                <p className="text-[0.65rem] leading-relaxed text-[var(--muted)]">
+                  No player in these box scores has at least {MIN_GAMES} games
+                  of {market} this season, so there is nothing here a
+                  projection could be built from.
+                </p>
+              )}
+
+              <details className="mt-2">
+                <summary className="cursor-pointer text-[0.65rem] text-[var(--muted-2)]">
+                  Also compare the books&apos; own prop lines (2 credits)
+                </summary>
+                <div className="mt-1.5">
               <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
                 <p className="text-[0.7rem] font-semibold text-[var(--text)]">
                   Player props on these same runs
@@ -653,14 +930,6 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
                 unknowns. What the run adds is how the prop moves WITH the
                 game, which no single posted price can tell you.
               </p>
-              {!propsAvailable && (
-                <p className="rounded-lg bg-[var(--surface-2)] px-2.5 py-1.5 text-[0.65rem] leading-relaxed text-[var(--muted)]">
-                  Not available on this game: {propsStatus.reason}
-                  {game && !isScoringComponent(game.league, "player_points") && (
-                    <> Pick an NBA or college basketball game above to run it.</>
-                  )}
-                </p>
-              )}
               {propNote && (
                 <p className="mb-2 text-[0.65rem] text-[var(--muted)]">{propNote}</p>
               )}
@@ -762,7 +1031,24 @@ export function GameSim({ rec }: { rec: SgpRecommendation }) {
                   </p>
                 </details>
               )}
+                </div>
+              </details>
             </div>
+          )}
+
+          {!propsAvailable && (
+            <div className="mt-3 border-t border-[var(--border)] pt-2.5">
+              <p className="mb-1 text-[0.7rem] font-semibold text-[var(--text)]">
+                Player props
+              </p>
+              <p className="rounded-lg bg-[var(--surface-2)] px-2.5 py-1.5 text-[0.65rem] leading-relaxed text-[var(--muted)]">
+                Not available on this game: {propsStatus.reason}
+                {game && !isScoringComponent(game.league, "player_points") && (
+                  <> Pick an NBA or college basketball game above to run it.</>
+                )}
+              </p>
+            </div>
+          )}
         </>
       )}
     </div>
